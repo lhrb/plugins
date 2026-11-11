@@ -1,0 +1,5 @@
+/target/
+__pycache__/
+/vendor/NeuralAmpModelerCore/.git
+/vendor/NeuralAmpModelerCore/Dependencies/eigen/.git
+/vendor/NeuralAmpModelerCore/Dependencies/AudioDSPTools/.git
