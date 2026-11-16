@@ -19,10 +19,10 @@ Open questions: None for planning. The hosting experiment must verify compatibil
 | Order | Feature | Depends on | Status |
 | --- | --- | --- | --- |
 | 1 | Two-plugin hosting feasibility experiment | — | Done |
-| 2 | Visual frequency-response comparison | 1 | Ready |
+| 2 | Visual frequency-response comparison | 1 | In progress |
 | 3 | Nonlinear and transient inspection | 2 | Blocked |
 
-Next: Slice 2 is dependency-ready; agree on its reset/preconditioning policy before implementation because CHOWTape reset-only trials retain observable history. Do not assume complete state restoration. Stop after slice 1.
+Next: Slice 2 inspection started; dependency 1 is Done. Await agreement on the reset/preconditioning policy before tests or implementation because CHOWTape reset-only trials retain observable history. Choose between explicitly history-dependent runs on the loaded instances and fresh measurement instances with snapshotted exposed settings; the latter does not restore unexposed state. Do not assume complete state restoration. Stop after slice 2.
 
 ## 1. Two-plugin hosting feasibility experiment
 
@@ -118,4 +118,4 @@ Use the same inspector to reveal saturation and compression behavior that a quie
 
 After OXIDE and CHOWTape frequency responses can be compared end to end, reassess which measurements help develop `tape/` before expanding. Candidate additions: intermodulation/aliasing tests, noise and wow/flutter analysis, stereo-link tests, sample-rate/block-size matrices, native editors, more formats, saved profiles, automatic reference matching, and production-clip validation. Library reuse is preserved now; a public stable API and integration into another project's test chain are separate work.
 
-Status: Slice 1 Done; the selected hosting route works for both binaries at the tested configuration. See [experiment.md](experiment.md) for direct evidence and [decisions.md](decisions.md) for tradeoffs. OXIDE repeats exactly; CHOWTape reset/preconditioning differs by 4.936e-5 peak against a 1e-6 tolerance, while matched full histories reproduce exactly. Complete arbitrary-history restoration remains unverified. Slice 2 has not started; slice 3 remains blocked.
+Status: Slice 1 Done; the selected hosting route works for both binaries at the tested configuration. See [experiment.md](experiment.md) for direct evidence and [decisions.md](decisions.md) for tradeoffs. OXIDE repeats exactly; CHOWTape reset/preconditioning differs by 4.936e-5 peak against a 1e-6 tolerance, while matched full histories reproduce exactly. Complete arbitrary-history restoration remains unverified. Slice 2 is In progress at inspection, awaiting the reset/preconditioning policy decision; no implementation or new tests have started. Slice 3 remains blocked.

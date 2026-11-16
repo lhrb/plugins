@@ -1,0 +1,9 @@
+[package]
+name = "clap-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+clap-sys = { git = "https://github.com/micahrj/clap-sys", rev = "25d7f53fdb6363ad63fbd80049cb7a42a97ac156" }
+libloading = "=0.8.9"
