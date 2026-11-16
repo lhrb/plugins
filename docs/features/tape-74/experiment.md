@@ -4,7 +4,7 @@
 
 **Revise, then review; do not authorize slice 2 yet.** The isolated candidate demonstrates level-dependent HF compression with nearly unity low-level response and modest measured CPU. It does not establish acceptable sound quality. Strong high-frequency excitation produces substantial alias energy without oversampling. CHOW comparison and human listening remain blocked/pending. No acceptance limits or product controls were approved here.
 
-Production DSP, plugin, UI, identities, and plan statuses remain unchanged.
+Production DSP, plugin, UI, and identities remain unchanged. Slice 1 is Blocked pending reference capture and listening; slice 2 remains Blocked.
 
 ## Reproduce
 

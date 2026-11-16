@@ -13,14 +13,16 @@ Goal: A lightweight, fixed-30-ips tape effect for individual instrument tracks, 
 - Prefer a lightweight perceptual approximation; do not promise a particular machine, physical simulation, or CHOW-equivalent sound. Airwindows and CHOW are references, not predetermined dependencies.
 - Preserve stereo operation, 8–384 kHz host acceptance, automation/state persistence, finite-output safeguards, channel isolation, and allocation-/lock-free audio processing. Continue using the same DSP in plugin and audition app.
 
-Open questions: No product blockers. Numerical sound, aliasing, and CPU acceptance limits require evidence from slice 1 and approval at its checkpoint; slice 2 remains blocked until then.
+Open questions: Slice 1 demonstrates the mechanism but lacks CHOW capture and human listening. Its unprotected candidate shows substantial aliasing. Sound, aliasing, CPU, calibration, and latency limits remain unapproved; slice 2 stays blocked.
 
 | Order | Feature | Depends on | Status |
 | --- | --- | --- | --- |
-| 1 | Clean-tape feasibility experiment | — | In progress |
+| 1 | Clean-tape feasibility experiment | — | Blocked |
 | 2 | Tape 74 recording effect | 1 | Blocked |
 
-Next: Complete slice 1 and review its evidence before authorizing slice 2.
+Next: None Ready. Review [experiment evidence](experiment.md), listen to the generated comparisons, and obtain a documented clean CHOW capture. Decide whether to authorize a bounded alias-controlled probe revision; do not start slice 2.
+
+Checkpoint: Mechanism and CPU measurements exist in `data/`; portable tests (7), probe check (1), formatting, and targeted Clippy pass. Slice 1 is not Done because reference comparison and listening remain unverified.
 
 ## 1. Clean-tape feasibility experiment
 
