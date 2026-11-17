@@ -1,4 +1,10 @@
-//! Small, format-independent experiment helpers; not a measurement framework.
+//! Portable measurement and comparison state, plus slice-1 experiment helpers.
+#[cfg(feature = "hosting")]
+pub mod clap;
+pub mod comparison;
+#[cfg(feature = "hosting")]
+pub mod hosting;
+pub mod measurement;
 pub const BLOCK: usize = 256;
 pub const RATE: f64 = 48_000.0;
 pub const PRE_BLOCKS: usize = 64;

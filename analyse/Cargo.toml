@@ -4,6 +4,27 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[[bin]]
+name = "clap-probe"
+path = "src/main.rs"
+required-features = ["hosting"]
+
+[[bin]]
+name = "plugin-inspector"
+path = "src/inspector.rs"
+required-features = ["gui"]
+
+[features]
+default = []
+hosting = ["dep:clap-sys", "dep:libloading", "dep:serde", "dep:serde_json"]
+gui = ["hosting", "dep:gpui"]
+
 [dependencies]
-clap-sys = { git = "https://github.com/micahrj/clap-sys", rev = "25d7f53fdb6363ad63fbd80049cb7a42a97ac156" }
-libloading = "=0.8.9"
+clap-sys = { git = "https://github.com/micahrj/clap-sys", rev = "25d7f53fdb6363ad63fbd80049cb7a42a97ac156", optional = true }
+libloading = { version = "=0.8.9", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+gpui = { version = "=0.2.2", default-features = false, features = ["x11", "font-kit"], optional = true }
+
+[profile.dev]
+debug = 0
