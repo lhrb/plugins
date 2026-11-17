@@ -32,33 +32,7 @@ None blocking the shell. Finalize host-triggered reset edge/event semantics befo
 `—` means provisional, not authorized. Add basic usable controls with each mode; reserve cohesive UX refinement for later. Detail only the next slice after review.
 
 Next: None.
-Review: Slice 1: accepted by requester; proceed to planning Slice 2. [experiment.md](experiment.md) records automated evidence, successful manual Bitwig use and accepted verification gaps. Editor opening speed remains a follow-up requirement. No later implementation slice is authorized.
-
-## 1. Load the CLAP shell in Bitwig
-
-Depends on: None.
-
-### Outcome
-
-Bitwig loads the plugin and opens its actual embedded GPUI editor without disrupting audio.
-
-### Guarantees
-
-- Build an identifiable CLAP artifact with its bundled helper; use minimal stereo pass-through and report zero compensation latency.
-- Editor open/close leaves processing unchanged; expose failures outside the audio callback. Preserve the reference's real-time safeguards.
-- Use the approved embedding, not a standalone substitute or general IPC/UI framework.
-
-### Scope boundary
-
-No mode controls, automation, styling, analyzer integration or full Identity certification. VST3, multi-instance/failure qualification and resource measurements remain completion requirements, not shell tasks.
-
-### Done when
-
-Provide the built artifact and exact build/load/open/close steps; the requester manually loads it in Bitwig and performs the host checks. Automated Bitwig loading is not required. Record binary/host versions, display backend and runtime dependencies. In Bitwig, demonstrate stereo pass-through, zero reported latency, repeated editor open/close and clean shutdown. Record unsupported behavior and a proceed/revise/stop recommendation; a negative result may answer the experiment but blocks dependent implementation.
-
-### Review
-
-Requester tries the shell and reviews embedding, dependencies and distribution constraints before more infrastructure. Decide whether to proceed to Identity, revise or stop. Evidence applies only to the tested host/backend, not universal Linux compatibility. Stop after this checkpoint; host verification is performed manually by the requester.
+Review: Slice 1 accepted; [experiment.md](experiment.md) records evidence and accepted gaps. Editor opening speed remains a follow-up requirement.
 
 ## Completion contract
 
@@ -84,13 +58,3 @@ All eight reference modes are reproducibly configurable through the host or embe
 - Through existing `analyse/` CLAP hosting, reproduce supported Identity/Gain/Delay/Low-pass checks and zero reported latency. No analyzer-native editor or VST3 hosting additions; do not claim unimplemented harmonic/dynamics/VST3 analyzer coverage. Record limitations and untested hosts/backends.
 
 Deferred: analyzer development, native Wayland, other OSes, mono/multichannel, float64 host audio, raw-coefficient editing unless requested, standalone devices, oversampling and broader compatibility certification.
-
-## GPUI tradeoffs informing the checkpoint
-
-- Native Rust/GPU rendering avoids a web runtime but needs working graphics/drivers. Zed documents Linux Vulkan startup/performance failures; test the pinned GPUI build, not assumptions from Zed's standalone performance.
-- Plugin editors cooperate with host-owned windows/event loops. The local X11 helper owns GPUI's loop outside the DAW; it is a native embedded UI, not a browser.
-- Helper isolation can contain renderer failures, not every plugin/driver failure or malicious code. Costs include packaging, IPC, startup, resources and lifecycle synchronization.
-- The adapter accepts X11 parent handles. XWayland may work on Wayland desktops but is not native Wayland embedding; verify each host/backend. Do not mandate this adapter for future environments without evidence.
-- Custom rendering does not guarantee native-widget focus, accessibility, input-method or scaling behavior. Check used controls; pin versions and recheck lifecycle/graphics on upgrades.
-
-Sources: [GPUI](https://www.gpui.rs/), [Zed Linux troubleshooting](https://zed.dev/docs/linux), `nam-linux-port/src/editor.rs`. Zed's experimental [embedded_gpui](https://github.com/zed-industries/embedded_gpui) embeds guests in GPUI hosts, not evidence of arbitrary DAW embedding.

@@ -1,18 +1,11 @@
 # Slice 1 experiment — accepted
 
-## Recommendation
+## Accepted result
 
-**Proceed to planning Slice 2.** The requester accepts the working shell and explicitly waives further checkpoint investigation. Slice 1 is Done; no later implementation has started.
-The CLAP shell builds and the actual bundled GPUI helper attaches/detaches under a synthetic X11 parent.
-The requester reports successful Bitwig loading, text in a floating editor window, stereo pass-through, editor open/close and clean removal/host shutdown.
-A floating host-owned plugin window is compatible with embedding; placement inside that window still needs confirmation.
-The requester also confirms uninterrupted audio during repeated editor open/close cycles.
-Host-displayed latency remains unconfirmed.
+**Slice 1 is Done; proceed to planning Slice 2.** The requester accepts the working shell and the evidence limitations below without further checkpoint investigation.
 
-**Consequential compatibility gap:** pinned NIH-plug returns **false from both CLAP `show` and `hide`**.
-It maps the editor during `set_parent` instead.
-Three successful attach/destroy cycles do not satisfy the CLAP visibility contract.
-If Bitwig depends on those callbacks, revise or stop this experiment before dependent implementation.
+**Accepted compatibility limitation:** pinned NIH-plug returns **false from both CLAP `show` and `hide`** and maps the editor during `set_parent` instead.
+Successful attach/destroy cycles do not satisfy the CLAP visibility contract; hosts requiring those callbacks remain unsupported.
 No dependency patch or wider host qualification was attempted.
 
 ## Build and environment observed — 2026-11-17
@@ -25,7 +18,7 @@ No dependency patch or wider host qualification was attempted.
 - NIH-plug `de421011f41a6d10fc8c7a6084e4f4dee0143683` (unmodified upstream); clap-sys `25d7f53fdb6363ad63fbd80049cb7a42a97ac156`, CLAP 1.2.2. VST3 disabled. Cargo.lock records the complete graph.
 - pkg-config: X11 `1.8.14`, XCB `1.17.0`, xkbcommon/xkbcommon-x11 `1.13.2`, fontconfig `2.18.3`, FreeType `26.7.20` (pkg-config ABI version; installed FreeType package `2.15.0-1`).
 - Vulkan loader `1.4.363`; AMD Radeon RX 6700 XT, RADV NAVI22, Mesa `26.2.7-arch1.1`, Vulkan device API `1.4.354`.
-- Xvfb and vulkaninfo available. Approximately 35 GiB free before build. Reused `nam-linux-port/target` as a Cargo artifact cache only; initial build still recompiled dependencies, increasing it from about 3.2 to 4.9 GiB. No NAM source/dependency changes.
+- Xvfb and vulkaninfo available. Commands below optionally reuse `nam-linux-port/target` as a Cargo artifact cache only; no NAM source/dependency changes.
 
 ## Commands and results
 
@@ -45,9 +38,7 @@ Run in `audiotestreference/` unless stated otherwise.
 | `ldd` on both artifacts | All linked libraries resolved; see runtime dependencies below |
 
 Cargo reports a dependency future-compatibility warning for `proc-macro-error2 2.0.1`; compilation and Clippy pass today.
-The callback code contains only slice iteration, finite sample replacement and one conditional relaxed atomic fault store.
 No runtime allocation/lock instrumentation or full wrapper real-time certification was performed.
-The status writer/reader, process launch, X11 operations, renderer and logging all run outside DSP.
 
 ## Artifacts
 
@@ -67,15 +58,15 @@ GPUI also needs dynamically loaded X11/font/graphics facilities, installed fonts
 The bundled helper is native Rust/GPUI, not a browser and not a standalone substitute.
 The pair is relocatable together; neither is a universal Linux binary or statically bundled graphics stack.
 
-## Manual Bitwig evidence to fill in
+## Manual Bitwig evidence and accepted gaps
 
 Follow the exact [build/install/load/open/close instructions](../../../audiotestreference/README.md#manual-bitwig-checkpoint).
 
-- Running host version/About: **pending**.
-- Session, host window backend, GPU/driver, display scaling, sample rate: **pending**.
+- Running host version/About: **not recorded; accepted gap**.
+- Session, host window backend, GPU/driver, display scaling, sample rate: **not recorded; accepted gap**.
 - Plugin discovery/instantiation: **passed, requester-reported**; plugin loaded successfully.
 - Stereo pass-through: **passed, requester-reported**; measurement method not specified.
-- Host-reported latency: **pending**; requester could not locate the host readout. Automated CLAP query returned zero; the panel's static label is not host evidence.
+- Host-reported latency: **not recorded; accepted gap**; requester could not locate the host readout. Automated CLAP query returned zero; the panel's static label is not host evidence.
 - Editor opening/content: **passed, requester-reported**; text appears in a floating plugin window, not the device panel. Whether the window is host-owned remains unconfirmed.
 - Repeated editor open/close during playback: **passed, requester-reported**; audio continued without interruption. Exact cycle count not specified.
 - Opening responsiveness: requester notices a short click-to-window delay and requests the fastest practical opening. No duration measured; optimization is not part of this checkpoint.
@@ -85,4 +76,3 @@ Follow the exact [build/install/load/open/close instructions](../../../audiotest
 Remaining gaps are intentional: arbitrary-host visibility/focus/scaling/resizing, XWayland, native Wayland, two instances, renderer-failure qualification, performance/resource measurements, full Identity/reset/state certification, later modes, automation and VST3.
 Helper exit leaves DSP unchanged by construction, but the host may retain a blank panel until it closes/recreates the editor; automatic renderer recovery is not implemented.
 Do not infer GUI/audio concurrency or Bitwig acceptance from sequential synthetic tests.
-Slice 1 is **Done** following requester acceptance of these evidence limitations. Stop implementation here; plan Slice 2 separately.
