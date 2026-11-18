@@ -7,7 +7,7 @@ use std::sync::{
     Arc,
 };
 
-use crate::domain::{pass_sample, Mode, SampleResult};
+use crate::domain::{Processor, SampleResult};
 
 #[derive(Default, Params)]
 struct ShellParams {}
@@ -16,6 +16,7 @@ struct ShellParams {}
 pub struct AudioTestReference {
     params: Arc<ShellParams>,
     fault: Arc<AtomicBool>,
+    processor: Processor,
 }
 
 impl Plugin for AudioTestReference {
@@ -71,7 +72,7 @@ impl Plugin for AudioTestReference {
         let mut fault = false;
         for channel in buffer.as_slice() {
             for sample in channel.iter_mut() {
-                let SampleResult { output, faulted } = pass_sample(*sample, &Mode::Identity);
+                let SampleResult { output, faulted } = self.processor.process_sample(*sample);
                 *sample = output;
                 fault |= faulted;
             }
