@@ -18,3 +18,7 @@ install -m755 "$target/$profile/libaudio_test_reference.so" target/bundled/audio
 install -m755 "$target/$profile/audio-test-reference-editor" target/bundled/audio-test-reference-editor
 (cd target/bundled && sha256sum audio-test-reference.clap audio-test-reference-editor > SHA256SUMS)
 printf 'Built %s/target/bundled/{audio-test-reference.clap,audio-test-reference-editor}\n' "$PWD"
+
+mkdir -p "$HOME/.clap"
+install -m755 target/bundled/audio-test-reference.clap \
+    target/bundled/audio-test-reference-editor "$HOME/.clap/"
