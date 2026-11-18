@@ -1,16 +1,5 @@
 //! Framework-independent shell DSP. No history, parameters, or mode machinery.
 
-pub enum Mode {
-    Identity,
-    Gain { gain: f64 },
-}
-
-#[derive(Debug, PartialEq)]
-pub struct SampleResult {
-    pub output: f32,
-    pub faulted: bool,
-}
-
 #[derive(Debug, PartialEq)]
 pub enum ConfigError {
     InvalidGain,
@@ -33,6 +22,17 @@ impl Gain {
     }
 }
 
+pub enum Mode {
+    Identity,
+    Gain { gain: Gain },
+}
+
+#[derive(Debug, PartialEq)]
+pub struct SampleResult {
+    pub output: f32,
+    pub faulted: bool,
+}
+
 /// Preserve every finite input bit, including signed zero. Latch faults in the adapter.
 pub fn pass_sample(sample: f32, mode: &Mode) -> SampleResult {
     if !sample.is_finite() {
@@ -44,7 +44,7 @@ pub fn pass_sample(sample: f32, mode: &Mode) -> SampleResult {
 
     let result = match mode {
         Mode::Identity => identity(sample),
-        Mode::Gain { gain: factor } => gain(sample, *factor),
+        Mode::Gain { gain: factor } => gain(sample, factor),
     };
 
     if !result.is_finite() || result.abs() > f64::from(f32::MAX) {
@@ -64,9 +64,9 @@ pub fn identity(sample: f32) -> f64 {
     f64::from(sample)
 }
 
-pub fn gain(sample: f32, factor: f64) -> f64 {
+pub fn gain(sample: f32, factor: &Gain) -> f64 {
     let sample64 = f64::from(sample);
-    sample64 * factor
+    sample64 * factor.value()
 }
 
 pub fn supports_sample_rate(rate: f32) -> bool {
@@ -118,15 +118,21 @@ mod tests {
 
     #[test]
     fn test_gain() {
-        assert_eq!(0.25, gain(0.5, 0.5));
-        assert_eq!(-0.5, gain(0.5, -1.0));
-        assert_eq!(1.5, gain(0.75, 2.0));
-        assert_eq!(0.0, gain(0.5, 0.0));
+        let g = Gain::new(0.5).expect("valid gain");
+        let g2 = Gain::new(-1.0).expect("valid gain");
+        let g3 = Gain::new(2.0).expect("valid gain");
+        let g4 = Gain::new(0.0).expect("valid gain");
+        assert_eq!(0.25, gain(0.5, &g));
+        assert_eq!(-0.5, gain(0.5, &g2));
+        assert_eq!(1.5, gain(0.75, &g3));
+        assert_eq!(0.0, gain(0.5, &g4));
     }
 
     #[test]
     fn call_gain() {
-        let mode = &Mode::Gain { gain: 2.0 };
+        let g = Gain::new(2.0).expect("valid gain");
+
+        let mode = &Mode::Gain { gain: g };
         let SampleResult { output, faulted } = pass_sample(0.5, mode);
         assert_eq!(1.0, output);
         assert!(!faulted);
