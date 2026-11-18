@@ -11,6 +11,28 @@ pub struct SampleResult {
     pub faulted: bool,
 }
 
+#[derive(Debug, PartialEq)]
+pub enum ConfigError {
+    InvalidGain,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Gain(f64);
+
+impl Gain {
+    pub fn new(value: f64) -> Result<Self, ConfigError> {
+        if !value.is_finite() || value > 16.0 || value < -16.0 {
+            return Err(ConfigError::InvalidGain);
+        }
+
+        Ok(Self(value))
+    }
+
+    pub fn value(&self) -> f64 {
+        self.0
+    }
+}
+
 /// Preserve every finite input bit, including signed zero. Latch faults in the adapter.
 pub fn pass_sample(sample: f32, mode: &Mode) -> SampleResult {
     if !sample.is_finite() {
@@ -103,8 +125,26 @@ mod tests {
     }
 
     #[test]
-    fn test_stuff() {
-        let a: f64 = 1.00000001;
-        println!("hallo: {v:.10}", v = a as f32);
+    fn call_gain() {
+        let mode = &Mode::Gain { gain: 2.0 };
+        let SampleResult { output, faulted } = pass_sample(0.5, mode);
+        assert_eq!(1.0, output);
+        assert!(!faulted);
+
+        let overflow = pass_sample(f32::MAX, mode);
+        assert_eq!(0.0, overflow.output);
+        assert!(overflow.faulted)
+    }
+
+    #[test]
+    fn parse_gain() {
+        let gain = Gain::new(16.0).expect("16.0 should be accepted");
+
+        assert_eq!(gain.value(), 16.0)
+    }
+
+    #[test]
+    fn reject_invalid_gain() {
+        assert_eq!(Gain::new(16.1), Err(ConfigError::InvalidGain));
     }
 }
