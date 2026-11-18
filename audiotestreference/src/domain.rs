@@ -132,12 +132,11 @@ mod tests {
             gain: Gain::new(2.0).expect("valid"),
         };
         p.set_mode(gain_mode);
-        assert_eq!(
-            p.process_sample(1.0),
-            SampleResult {
-                output: 2.0,
-                faulted: false
-            }
-        )
+
+        let input: [f32; 4] = [0.0, 0.5, 0.0, -0.5];
+        let expected: [f32; 4] = [0.0, 1.0, 0.0, -1.0];
+        for (s, e) in input.iter().zip(expected.iter()) {
+            assert_eq!(p.process_sample(*s).output, *e)
+        }
     }
 }

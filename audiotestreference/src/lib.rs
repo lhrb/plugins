@@ -9,8 +9,37 @@ use std::sync::{
 
 use crate::domain::{Processor, SampleResult};
 
-#[derive(Default, Params)]
-struct ShellParams {}
+#[derive(Enum, Clone, Copy, PartialEq, Eq)]
+enum HostMode {
+    #[id = "identity"]
+    Identity,
+    #[id = "gain"]
+    Gain,
+}
+
+#[derive(Params)]
+struct ShellParams {
+    #[id = "mode"]
+    mode: EnumParam<HostMode>,
+    #[id = "gain"]
+    gain: FloatParam,
+}
+
+impl Default for ShellParams {
+    fn default() -> Self {
+        Self {
+            mode: EnumParam::new("Mode", HostMode::Identity),
+            gain: FloatParam::new(
+                "Gain",
+                1.0,
+                FloatRange::Linear {
+                    min: -16.0,
+                    max: 16.0,
+                },
+            ),
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct AudioTestReference {
@@ -70,6 +99,18 @@ impl Plugin for AudioTestReference {
         _: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         let mut fault = false;
+        let requested_mode = match self.params.mode.value() {
+            HostMode::Identity => Ok(domain::Mode::Identity),
+            HostMode::Gain => {
+                let gain = f64::from(self.params.gain.value());
+                domain::Gain::new(gain).map(|gain| domain::Mode::Gain { gain })
+            }
+        };
+
+        if let Ok(mode) = requested_mode {
+            self.processor.set_mode(mode);
+        }
+
         for channel in buffer.as_slice() {
             for sample in channel.iter_mut() {
                 let SampleResult { output, faulted } = self.processor.process_sample(*sample);
