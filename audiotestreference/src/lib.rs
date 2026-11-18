@@ -7,6 +7,8 @@ use std::sync::{
     Arc,
 };
 
+use crate::domain::{pass_sample, Mode, SampleResult};
+
 #[derive(Default, Params)]
 struct ShellParams {}
 
@@ -69,9 +71,9 @@ impl Plugin for AudioTestReference {
         let mut fault = false;
         for channel in buffer.as_slice() {
             for sample in channel.iter_mut() {
-                let (output, invalid) = domain::pass_sample(*sample);
+                let SampleResult { output, faulted } = pass_sample(*sample, &Mode::Identity);
                 *sample = output;
-                fault |= invalid;
+                fault |= faulted;
             }
         }
         if fault {
