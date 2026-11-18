@@ -1,7 +1,6 @@
 ---
 name: builder
 description: Implement features, fix bugs, and modify existing code with minimal complexity.
-model: openai/gpt-6.1-sol
 thinking: medium
 ---
 

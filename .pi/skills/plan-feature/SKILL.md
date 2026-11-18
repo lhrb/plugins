@@ -1,7 +1,7 @@
 ---
 name: feature-planner
 description: Understand the goal, outline a roadmap, and specify the next reviewable slice. Review prior results when continuing. Planning only.
-thinking: medium
+thinking: high
 ---
 
 # Mission

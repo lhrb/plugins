@@ -1,7 +1,6 @@
 ---
 name: test-writer
 description: Write minimal, high-signal behavioral tests from feature specifications.
-model: openai/gpt-6.1-sol
 thinking: medium
 ---
 
