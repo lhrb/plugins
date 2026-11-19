@@ -68,7 +68,10 @@ impl Plugin for AudioTestReference {
     }
 
     fn editor(&mut self, _: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        Some(Box::new(editor::ShellEditor::new(self.fault.clone())))
+        Some(Box::new(editor::ShellEditor::new(
+            Arc::clone(&self.params),
+            Arc::clone(&self.fault),
+        )))
     }
 
     fn initialize(

@@ -15,6 +15,8 @@ use std::{
     time::Duration,
 };
 
+use crate::{HostMode, ShellParams};
+
 fn helper_path() -> Option<PathBuf> {
     // SAFETY: dladdr fills info on success; dli_fname is a NUL-terminated library path.
     let library = unsafe {
@@ -33,17 +35,21 @@ fn helper_path() -> Option<PathBuf> {
 }
 
 pub struct ShellEditor {
+    params: Arc<ShellParams>,
     fault: Arc<AtomicBool>,
     scale: AtomicU32,
 }
+
 impl ShellEditor {
-    pub fn new(fault: Arc<AtomicBool>) -> Self {
+    pub fn new(params: Arc<ShellParams>, fault: Arc<AtomicBool>) -> Self {
         Self {
+            params,
             fault,
             scale: AtomicU32::new(1.0f32.to_bits()),
         }
     }
 }
+
 impl Editor for ShellEditor {
     fn spawn(&self, parent: ParentWindowHandle, _: Arc<dyn GuiContext>) -> Box<dyn Any + Send> {
         let ParentWindowHandle::X11Window(parent) = parent else {
@@ -76,18 +82,22 @@ impl Editor for ShellEditor {
         let mut stdin = child.stdin.take().expect("piped helper stdin");
         let stop = Arc::new(AtomicBool::new(false));
         let writer_stop = stop.clone();
-        let fault = self.fault.clone();
+        let fault = Arc::clone(&self.fault);
+        let params = Arc::clone(&self.params);
         let writer = thread::spawn(move || {
             while !writer_stop.load(Ordering::Relaxed) {
-                // One-byte status only: no parameters or audio cross this pipe.
-                if stdin
-                    .write_all(if fault.load(Ordering::Relaxed) {
-                        b"1"
-                    } else {
-                        b"0"
-                    })
-                    .is_err()
-                {
+                let fault_byte = if fault.load(Ordering::Relaxed) {
+                    b'1'
+                } else {
+                    b'0'
+                };
+
+                let mode_byte = match params.mode.value() {
+                    HostMode::Identity => b'I',
+                    HostMode::Gain => b'G',
+                };
+
+                if stdin.write_all(&[fault_byte, mode_byte]).is_err() {
                     break;
                 }
                 thread::sleep(Duration::from_millis(250));

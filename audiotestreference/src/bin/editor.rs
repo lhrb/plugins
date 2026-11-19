@@ -17,6 +17,7 @@ use std::{
 struct Status {
     fault: AtomicBool,
     closed: AtomicBool,
+    gain_mode: AtomicBool,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EditorMode {
@@ -217,11 +218,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let status = Arc::new(Status::default());
     let reader_status = status.clone();
     std::thread::spawn(move || {
-        let mut byte = [0];
-        while io::stdin().lock().read_exact(&mut byte).is_ok() {
+        let mut stdin = io::stdin().lock();
+        let mut message = [0u8; 2];
+        while stdin.read_exact(&mut message).is_ok() {
             reader_status
                 .fault
-                .store(byte[0] == b'1', Ordering::Relaxed);
+                .store(message[0] == b'1', Ordering::Relaxed);
+            reader_status
+                .gain_mode
+                .store(message[1] == b'G', Ordering::Relaxed);
         }
         reader_status.closed.store(true, Ordering::Relaxed);
     });
@@ -258,7 +263,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             let _ = cx.update(|cx| cx.quit());
                             break;
                         }
-                        if view.update(cx, |_, cx| cx.notify()).is_err() {
+                        let mode = if polled_status.gain_mode.load(Ordering::Relaxed) {
+                            EditorMode::Gain
+                        } else {
+                            EditorMode::Identity
+                        };
+
+                        if view
+                            .update(cx, |this, cx| {
+                                if this.mode != mode {
+                                    this.select_mode(mode);
+                                }
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
                             break;
                         }
                     })
