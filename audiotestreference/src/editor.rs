@@ -106,7 +106,7 @@ impl Editor for EditorBridge {
                 if to_helper.write_all(&[fault_byte, mode_byte]).is_err() {
                     break;
                 }
-                thread::sleep(Duration::from_millis(250));
+                thread::sleep(Duration::from_millis(16));
             }
         });
 

@@ -277,7 +277,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 cx.new(|cx: &mut Context<EditorView>| {
                     let polled_status = status.clone();
                     cx.spawn(async move |view, cx| loop {
-                        Timer::after(Duration::from_millis(250)).await;
+                        Timer::after(Duration::from_millis(16)).await;
                         if polled_status.closed.load(Ordering::Relaxed) {
                             let _ = cx.update(|cx| cx.quit());
                             break;
