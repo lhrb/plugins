@@ -18,14 +18,14 @@ enum HostMode {
 }
 
 #[derive(Params)]
-struct ShellParams {
+struct PluginParams {
     #[id = "mode"]
     mode: EnumParam<HostMode>,
     #[id = "gain"]
     gain: FloatParam,
 }
 
-impl Default for ShellParams {
+impl Default for PluginParams {
     fn default() -> Self {
         Self {
             mode: EnumParam::new("Mode", HostMode::Identity),
@@ -43,7 +43,7 @@ impl Default for ShellParams {
 
 #[derive(Default)]
 pub struct AudioTestReference {
-    params: Arc<ShellParams>,
+    params: Arc<PluginParams>,
     fault: Arc<AtomicBool>,
     processor: Processor,
 }
@@ -62,13 +62,14 @@ impl Plugin for AudioTestReference {
     const SAMPLE_ACCURATE_AUTOMATION: bool = false;
     type SysExMessage = ();
     type BackgroundTask = ();
+    const test =
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
 
     fn editor(&mut self, _: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        Some(Box::new(editor::ShellEditor::new(
+        Some(Box::new(editor::EditorBridge::new(
             Arc::clone(&self.params),
             Arc::clone(&self.fault),
         )))

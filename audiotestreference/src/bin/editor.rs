@@ -4,7 +4,7 @@ mod embedding;
 use gpui::{prelude::*, *};
 use std::{
     cell::Cell,
-    io::{self, Read},
+    io::{self, Read, Write},
     rc::Rc,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -28,16 +28,17 @@ enum EditorMode {
 const MIN_GAIN: f32 = -16.0;
 const MAX_GAIN: f32 = 16.0;
 
-struct ShellView {
+struct EditorView {
     status: Arc<Status>,
     mode: EditorMode,
     gain: f32,
     gain_drag: Option<Bounds<Pixels>>,
     // Retain the X11 client while the child window is embedded.
     _embedding: x11rb::rust_connection::RustConnection,
+    mode_tx: std::sync::mpsc::Sender<EditorMode>,
 }
 
-impl ShellView {
+impl EditorView {
     // These handlers only update the preview. Connect user edits to the host here later.
     fn select_mode(&mut self, mode: EditorMode) {
         self.mode = mode;
@@ -66,6 +67,9 @@ impl ShellView {
             .cursor_pointer()
             .child(label)
             .on_click(cx.listener(move |this, _, _, cx| {
+                if let Err(error) = this.mode_tx.send(mode) {
+                    eprintln!("Could not queue mode request: {error}");
+                }
                 this.select_mode(mode);
                 cx.notify();
             }))
@@ -159,7 +163,7 @@ fn gain_label(gain: f32) -> String {
     format!("{gain}× · {db:.2} dB")
 }
 
-impl Render for ShellView {
+impl Render for EditorView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
@@ -230,6 +234,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         reader_status.closed.store(true, Ordering::Relaxed);
     });
+
+    let (mode_tx, mode_rx) = std::sync::mpsc::channel::<EditorMode>();
+    std::thread::spawn(move || {
+        let mut stdout = io::stdout().lock();
+
+        for mode in mode_rx {
+            let byte = match mode {
+                EditorMode::Identity => b'I',
+                EditorMode::Gain => b'G',
+            };
+
+            if stdout.write_all(&[byte]).is_err() || stdout.flush().is_err() {
+                break;
+            }
+        }
+    });
+
     Application::new().run(move |cx: &mut App| {
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
@@ -255,7 +276,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         eprintln!("AudioTestReference embedding: {error}");
                         std::process::exit(1);
                     });
-                cx.new(|cx: &mut Context<ShellView>| {
+                cx.new(|cx: &mut Context<EditorView>| {
                     let polled_status = status.clone();
                     cx.spawn(async move |view, cx| loop {
                         Timer::after(Duration::from_millis(250)).await;
@@ -282,12 +303,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     })
                     .detach();
-                    ShellView {
+                    EditorView {
                         status,
                         mode: EditorMode::Identity,
                         gain: 1.0,
                         gain_drag: None,
                         _embedding: connection,
+                        mode_tx: mode_tx,
                     }
                 })
             },

@@ -3,19 +3,20 @@ use nih_plug::prelude::*;
 use std::{
     any::Any,
     ffi::CStr,
-    io::Write,
+    io::{Read, Write},
     os::unix::ffi::OsStrExt,
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
+        mpsc::Sender,
         Arc,
     },
     thread::{self, JoinHandle},
     time::Duration,
 };
 
-use crate::{HostMode, ShellParams};
+use crate::{HostMode, PluginParams};
 
 fn helper_path() -> Option<PathBuf> {
     // SAFETY: dladdr fills info on success; dli_fname is a NUL-terminated library path.
@@ -34,23 +35,29 @@ fn helper_path() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-pub struct ShellEditor {
-    params: Arc<ShellParams>,
+pub struct EditorBridge {
+    params: Arc<PluginParams>,
     fault: Arc<AtomicBool>,
     scale: AtomicU32,
+    sender: Sender<HostMode>,
 }
 
-impl ShellEditor {
-    pub fn new(params: Arc<ShellParams>, fault: Arc<AtomicBool>) -> Self {
+impl EditorBridge {
+    pub fn new(
+        params: Arc<PluginParams>,
+        fault: Arc<AtomicBool>,
+        sender: Sender<HostMode>,
+    ) -> Self {
         Self {
             params,
             fault,
             scale: AtomicU32::new(1.0f32.to_bits()),
+            sender: sender,
         }
     }
 }
 
-impl Editor for ShellEditor {
+impl Editor for EditorBridge {
     fn spawn(&self, parent: ParentWindowHandle, _: Arc<dyn GuiContext>) -> Box<dyn Any + Send> {
         let ParentWindowHandle::X11Window(parent) = parent else {
             eprintln!("AudioTestReference: editor requires an X11/XWayland parent");
@@ -69,7 +76,7 @@ impl Editor for ShellEditor {
                 f32::from_bits(self.scale.load(Ordering::Relaxed)).to_string(),
             )
             .stdin(Stdio::piped())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn();
         let mut child = match child {
@@ -79,7 +86,7 @@ impl Editor for ShellEditor {
                 return Box::new(());
             }
         };
-        let mut stdin = child.stdin.take().expect("piped helper stdin");
+        let mut to_helper = child.stdin.take().expect("piped helper stdin");
         let stop = Arc::new(AtomicBool::new(false));
         let writer_stop = stop.clone();
         let fault = Arc::clone(&self.fault);
@@ -97,10 +104,30 @@ impl Editor for ShellEditor {
                     HostMode::Gain => b'G',
                 };
 
-                if stdin.write_all(&[fault_byte, mode_byte]).is_err() {
+                if to_helper.write_all(&[fault_byte, mode_byte]).is_err() {
                     break;
                 }
                 thread::sleep(Duration::from_millis(250));
+            }
+        });
+
+        let sender = self.sender.clone();
+        let mut from_helper = child.stdout.take().expect("piped helper stdout");
+        thread::spawn(move || {
+            let mut message = [0u8; 1];
+            while from_helper.read_exact(&mut message).is_ok() {
+                let mode = match message[0] {
+                    b'I' => HostMode::Identity,
+                    b'G' => HostMode::Gain,
+                    byte => {
+                        eprintln!("unknown {byte}");
+                        continue;
+                    }
+                };
+
+                if let Err(error) = sender.send(mode) {
+                    eprintln!("could not send mode {error}")
+                }
             }
         });
         Box::new(EditorHandle {
