@@ -125,12 +125,15 @@ impl Plugin for AudioTestReference {
             self.processor.set_mode(mode);
         }
 
-        for channel in buffer.as_slice() {
-            for sample in channel.iter_mut() {
-                let SampleResult { output, faulted } = self.processor.process_sample(*sample);
-                *sample = output;
-                fault |= faulted;
-            }
+        let [left, right] = buffer.as_slice() else {
+            return ProcessStatus::Error("expect stereo buffer");
+        };
+
+        for (l, r) in left.iter_mut().zip(right.iter_mut()) {
+            let SampleResult { output, faulted } = self.processor.process_frame([*l, *r]);
+            *l = output[0];
+            *r = output[1];
+            fault |= faulted;
         }
         if fault {
             self.fault.store(true, Ordering::Relaxed);

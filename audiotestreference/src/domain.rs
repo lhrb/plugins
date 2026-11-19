@@ -16,7 +16,7 @@ pub enum Mode {
 
 #[derive(Debug, PartialEq)]
 pub struct SampleResult {
-    pub output: f32,
+    pub output: [f32; 2],
     pub faulted: bool,
 }
 
@@ -36,8 +36,8 @@ impl Processor {
         self.mode = mode;
     }
 
-    pub fn process_sample(&mut self, sample: f32) -> SampleResult {
-        pass_sample(sample, &self.mode)
+    pub fn process_frame(&mut self, frame: [f32; 2]) -> SampleResult {
+        pass_frame(frame, &self.mode)
     }
 }
 
@@ -47,35 +47,38 @@ impl Default for Processor {
     }
 }
 
-/// Preserve every finite input bit, including signed zero. Latch faults in the adapter.
-pub fn pass_sample(sample: f32, mode: &Mode) -> SampleResult {
-    if !sample.is_finite() {
+pub fn pass_frame(frame: [f32; 2], mode: &Mode) -> SampleResult {
+    if !frame[0].is_finite() || !frame[1].is_finite() {
         return SampleResult {
-            output: 0.0,
+            output: [0.0, 0.0],
             faulted: true,
         };
     }
 
     let result = match mode {
-        Mode::Identity => identity(sample),
-        Mode::Gain { gain: factor } => gain(sample, factor),
+        Mode::Identity => identity(frame),
+        Mode::Gain { gain: factor } => gain(frame, factor),
     };
 
-    if !result.is_finite() || result.abs() > f64::from(f32::MAX) {
+    if !result[0].is_finite()
+        || result[0].abs() > f64::from(f32::MAX)
+        || !result[1].is_finite()
+        || result[1].abs() > f64::from(f32::MAX)
+    {
         return SampleResult {
-            output: 0.0,
+            output: [0.0, 0.0],
             faulted: true,
         };
     }
 
     SampleResult {
-        output: result as f32,
+        output: [result[0] as f32, result[1] as f32],
         faulted: false,
     }
 }
 
-pub fn identity(sample: f32) -> f64 {
-    f64::from(sample)
+pub fn identity(frame: [f32; 2]) -> [f64; 2] {
+    [f64::from(frame[0]), f64::from(frame[1])]
 }
 
 pub fn supports_sample_rate(rate: f32) -> bool {
@@ -93,25 +96,30 @@ mod tests {
         for bits in [
             0, 0x80000000, 1, 0x80000001, 0x3f800000, 0xc0200000, 0x7f7fffff,
         ] {
-            let SampleResult { output, faulted } = pass_sample(f32::from_bits(bits), &mode);
-            assert_eq!(output.to_bits(), bits);
-            assert!(!faulted);
+            let sample = f32::from_bits(bits);
+            for frame in [[sample, -0.5], [-0.5, sample]] {
+                let SampleResult { output, faulted } = pass_frame(frame, &mode);
+                assert_eq!(output.map(f32::to_bits), frame.map(f32::to_bits));
+                assert!(!faulted);
+            }
         }
         for input in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert_eq!(
-                pass_sample(input, &mode),
-                SampleResult {
-                    output: 0.0,
-                    faulted: true
-                }
-            );
-            assert_eq!(
-                pass_sample(-0.5, &mode),
-                SampleResult {
-                    output: -0.5,
-                    faulted: false
-                }
-            );
+            for frame in [[input, -0.5], [-0.5, input]] {
+                assert_eq!(
+                    pass_frame(frame, &mode),
+                    SampleResult {
+                        output: [0.0, 0.0],
+                        faulted: true,
+                    }
+                );
+                assert_eq!(
+                    pass_frame([-0.5, 0.25], &mode),
+                    SampleResult {
+                        output: [-0.5, 0.25],
+                        faulted: false,
+                    }
+                );
+            }
         }
     }
 
@@ -133,10 +141,16 @@ mod tests {
         };
         p.set_mode(gain_mode);
 
-        let input: [f32; 4] = [0.0, 0.5, 0.0, -0.5];
-        let expected: [f32; 4] = [0.0, 1.0, 0.0, -1.0];
-        for (s, e) in input.iter().zip(expected.iter()) {
-            assert_eq!(p.process_sample(*s).output, *e)
+        let input = [[0.0, 0.5], [-0.5, 0.0]];
+        let expected = [[0.0, 1.0], [-1.0, 0.0]];
+        for (frame, output) in input.into_iter().zip(expected) {
+            assert_eq!(
+                p.process_frame(frame),
+                SampleResult {
+                    output,
+                    faulted: false,
+                }
+            );
         }
     }
 }
