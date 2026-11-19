@@ -9,14 +9,13 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
-        mpsc::Sender,
         Arc,
     },
     thread::{self, JoinHandle},
     time::Duration,
 };
 
-use crate::{HostMode, PluginParams};
+use crate::{AudioTestReference, HostMode, PluginParams, SetModeTask};
 
 fn helper_path() -> Option<PathBuf> {
     // SAFETY: dladdr fills info on success; dli_fname is a NUL-terminated library path.
@@ -39,26 +38,26 @@ pub struct EditorBridge {
     params: Arc<PluginParams>,
     fault: Arc<AtomicBool>,
     scale: AtomicU32,
-    sender: Sender<HostMode>,
+    executor: AsyncExecutor<AudioTestReference>,
 }
 
 impl EditorBridge {
     pub fn new(
         params: Arc<PluginParams>,
         fault: Arc<AtomicBool>,
-        sender: Sender<HostMode>,
+        executor: AsyncExecutor<AudioTestReference>,
     ) -> Self {
         Self {
             params,
             fault,
             scale: AtomicU32::new(1.0f32.to_bits()),
-            sender: sender,
+            executor: executor,
         }
     }
 }
 
 impl Editor for EditorBridge {
-    fn spawn(&self, parent: ParentWindowHandle, _: Arc<dyn GuiContext>) -> Box<dyn Any + Send> {
+    fn spawn(&self, parent: ParentWindowHandle, cx: Arc<dyn GuiContext>) -> Box<dyn Any + Send> {
         let ParentWindowHandle::X11Window(parent) = parent else {
             eprintln!("AudioTestReference: editor requires an X11/XWayland parent");
             return Box::new(());
@@ -111,9 +110,10 @@ impl Editor for EditorBridge {
             }
         });
 
-        let sender = self.sender.clone();
+        let executor = self.executor.clone();
+        let weack_context = Arc::downgrade(&cx);
         let mut from_helper = child.stdout.take().expect("piped helper stdout");
-        thread::spawn(move || {
+        let reader = thread::spawn(move || {
             let mut message = [0u8; 1];
             while from_helper.read_exact(&mut message).is_ok() {
                 let mode = match message[0] {
@@ -125,15 +125,18 @@ impl Editor for EditorBridge {
                     }
                 };
 
-                if let Err(error) = sender.send(mode) {
-                    eprintln!("could not send mode {error}")
-                }
+                executor.execute_gui(SetModeTask {
+                    mode,
+                    context: weack_context.clone(),
+                });
             }
         });
         Box::new(EditorHandle {
             child,
             stop,
             writer: Some(writer),
+            _context: cx,
+            reader: Some(reader),
         })
     }
     fn size(&self) -> (u32, u32) {
@@ -154,6 +157,8 @@ struct EditorHandle {
     child: Child,
     stop: Arc<AtomicBool>,
     writer: Option<JoinHandle<()>>,
+    _context: Arc<dyn GuiContext>,
+    reader: Option<JoinHandle<()>>,
 }
 impl Drop for EditorHandle {
     fn drop(&mut self) {
@@ -163,6 +168,9 @@ impl Drop for EditorHandle {
         let _ = self.child.wait();
         if let Some(writer) = self.writer.take() {
             let _ = writer.join();
+        }
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
         }
     }
 }

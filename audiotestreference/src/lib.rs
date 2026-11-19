@@ -41,6 +41,11 @@ impl Default for PluginParams {
     }
 }
 
+pub struct SetModeTask {
+    mode: HostMode,
+    context: std::sync::Weak<dyn GuiContext>,
+}
+
 #[derive(Default)]
 pub struct AudioTestReference {
     params: Arc<PluginParams>,
@@ -61,17 +66,17 @@ impl Plugin for AudioTestReference {
     }];
     const SAMPLE_ACCURATE_AUTOMATION: bool = false;
     type SysExMessage = ();
-    type BackgroundTask = ();
-    const test =
+    type BackgroundTask = SetModeTask;
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
 
-    fn editor(&mut self, _: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+    fn editor(&mut self, executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         Some(Box::new(editor::EditorBridge::new(
             Arc::clone(&self.params),
             Arc::clone(&self.fault),
+            executor,
         )))
     }
 
@@ -126,6 +131,21 @@ impl Plugin for AudioTestReference {
             self.fault.store(true, Ordering::Relaxed);
         }
         ProcessStatus::Normal
+    }
+
+    fn task_executor(&mut self) -> TaskExecutor<Self> {
+        let params = Arc::clone(&self.params);
+
+        Box::new(move |task: SetModeTask| {
+            let Some(context) = task.context.upgrade() else {
+                return; // The editor has closed.
+            };
+
+            let setter = ParamSetter::new(context.as_ref());
+            setter.begin_set_parameter(&params.mode);
+            setter.set_parameter(&params.mode, task.mode);
+            setter.end_set_parameter(&params.mode);
+        })
     }
 }
 

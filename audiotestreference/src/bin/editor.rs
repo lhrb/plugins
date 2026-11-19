@@ -66,12 +66,10 @@ impl EditorView {
             .bg(rgb(if selected { 0x284769 } else { 0x2b3036 }))
             .cursor_pointer()
             .child(label)
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_click(cx.listener(move |this, _, _, _| {
                 if let Err(error) = this.mode_tx.send(mode) {
                     eprintln!("Could not queue mode request: {error}");
                 }
-                this.select_mode(mode);
-                cx.notify();
             }))
     }
 
