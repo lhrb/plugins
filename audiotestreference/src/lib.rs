@@ -41,8 +41,13 @@ impl Default for PluginParams {
     }
 }
 
-pub struct SetModeTask {
-    mode: HostMode,
+enum ParameterEdit {
+    Mode(HostMode),
+    Gain(f32),
+}
+
+pub struct SetParameterTask {
+    edit: ParameterEdit,
     context: std::sync::Weak<dyn GuiContext>,
 }
 
@@ -66,7 +71,7 @@ impl Plugin for AudioTestReference {
     }];
     const SAMPLE_ACCURATE_AUTOMATION: bool = false;
     type SysExMessage = ();
-    type BackgroundTask = SetModeTask;
+    type BackgroundTask = SetParameterTask;
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
@@ -136,15 +141,27 @@ impl Plugin for AudioTestReference {
     fn task_executor(&mut self) -> TaskExecutor<Self> {
         let params = Arc::clone(&self.params);
 
-        Box::new(move |task: SetModeTask| {
+        Box::new(move |task: SetParameterTask| {
             let Some(context) = task.context.upgrade() else {
                 return; // The editor has closed.
             };
 
             let setter = ParamSetter::new(context.as_ref());
-            setter.begin_set_parameter(&params.mode);
-            setter.set_parameter(&params.mode, task.mode);
-            setter.end_set_parameter(&params.mode);
+            match task.edit {
+                ParameterEdit::Mode(mode) => {
+                    setter.begin_set_parameter(&params.mode);
+                    setter.set_parameter(&params.mode, mode);
+                    setter.end_set_parameter(&params.mode);
+                }
+                ParameterEdit::Gain(gain) => {
+                    if domain::Gain::new(f64::from(gain)).is_err() {
+                        return;
+                    }
+                    setter.begin_set_parameter(&params.gain);
+                    setter.set_parameter(&params.gain, gain);
+                    setter.end_set_parameter(&params.gain);
+                }
+            }
         })
     }
 }

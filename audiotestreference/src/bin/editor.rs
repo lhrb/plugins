@@ -7,7 +7,7 @@ use std::{
     io::{self, Read, Write},
     rc::Rc,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc,
     },
     time::Duration,
@@ -18,11 +18,32 @@ struct Status {
     fault: AtomicBool,
     closed: AtomicBool,
     gain_mode: AtomicBool,
+    gain: AtomicU32,
 }
+
+impl Status {
+    fn mode(&self) -> EditorMode {
+        if self.gain_mode.load(Ordering::Relaxed) {
+            EditorMode::Gain
+        } else {
+            EditorMode::Identity
+        }
+    }
+
+    fn gain(&self) -> f32 {
+        f32::from_bits(self.gain.load(Ordering::Relaxed))
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EditorMode {
     Identity,
     Gain,
+}
+
+enum EditorEdit {
+    Mode(EditorMode),
+    Gain(f32),
 }
 
 const MIN_GAIN: f32 = -16.0;
@@ -35,11 +56,10 @@ struct EditorView {
     gain_drag: Option<Bounds<Pixels>>,
     // Retain the X11 client while the child window is embedded.
     _embedding: x11rb::rust_connection::RustConnection,
-    mode_tx: std::sync::mpsc::Sender<EditorMode>,
+    edit_tx: std::sync::mpsc::Sender<EditorEdit>,
 }
 
 impl EditorView {
-    // These handlers only update the preview. Connect user edits to the host here later.
     fn select_mode(&mut self, mode: EditorMode) {
         self.mode = mode;
         self.gain_drag = None;
@@ -47,6 +67,13 @@ impl EditorView {
 
     fn edit_gain(&mut self, gain: f32) {
         self.gain = gain;
+        self.send_edit(EditorEdit::Gain(gain));
+    }
+
+    fn send_edit(&self, edit: EditorEdit) {
+        if let Err(error) = self.edit_tx.send(edit) {
+            eprintln!("Could not queue editor edit: {error}");
+        }
     }
 
     fn mode_button(
@@ -67,9 +94,7 @@ impl EditorView {
             .cursor_pointer()
             .child(label)
             .on_click(cx.listener(move |this, _, _, _| {
-                if let Err(error) = this.mode_tx.send(mode) {
-                    eprintln!("Could not queue mode request: {error}");
-                }
+                this.send_edit(EditorEdit::Mode(mode));
             }))
     }
 
@@ -190,12 +215,6 @@ impl Render for EditorView {
             .child(div().text_xl().child("AudioTestReference"))
             .child(
                 div()
-                    .text_sm()
-                    .text_color(rgb(0xa4aeba))
-                    .child("Controls preview · not connected to the host"),
-            )
-            .child(
-                div()
                     .flex()
                     .gap_2()
                     .child(self.mode_button("Identity", EditorMode::Identity, cx))
@@ -217,33 +236,40 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("Use --parent <X11 window ID>".into());
     }
     let parent = args[1].parse::<u32>()?;
-    let status = Arc::new(Status::default());
+    let status = Arc::new(Status {
+        gain: AtomicU32::new(1.0f32.to_bits()),
+        ..Status::default()
+    });
     let reader_status = status.clone();
     std::thread::spawn(move || {
         let mut stdin = io::stdin().lock();
-        let mut message = [0u8; 2];
+        let mut message = [0u8; 6];
         while stdin.read_exact(&mut message).is_ok() {
-            reader_status
-                .fault
-                .store(message[0] == b'1', Ordering::Relaxed);
+            let [fault, mode, gain_bytes @ ..] = message;
+            let gain = f32::from_le_bytes(gain_bytes);
+            if (MIN_GAIN..=MAX_GAIN).contains(&gain) {
+                reader_status.gain.store(gain.to_bits(), Ordering::Relaxed);
+            }
+            reader_status.fault.store(fault == b'1', Ordering::Relaxed);
             reader_status
                 .gain_mode
-                .store(message[1] == b'G', Ordering::Relaxed);
+                .store(mode == b'G', Ordering::Relaxed);
         }
         reader_status.closed.store(true, Ordering::Relaxed);
     });
 
-    let (mode_tx, mode_rx) = std::sync::mpsc::channel::<EditorMode>();
+    let (edit_tx, edit_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut stdout = io::stdout().lock();
 
-        for mode in mode_rx {
-            let byte = match mode {
-                EditorMode::Identity => b'I',
-                EditorMode::Gain => b'G',
+        for edit in edit_rx {
+            let (tag, [a, b, c, d]) = match edit {
+                EditorEdit::Mode(EditorMode::Identity) => (b'I', [0; 4]),
+                EditorEdit::Mode(EditorMode::Gain) => (b'G', [0; 4]),
+                EditorEdit::Gain(gain) => (b'V', gain.to_le_bytes()),
             };
 
-            if stdout.write_all(&[byte]).is_err() || stdout.flush().is_err() {
+            if stdout.write_all(&[tag, a, b, c, d]).is_err() || stdout.flush().is_err() {
                 break;
             }
         }
@@ -282,16 +308,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             let _ = cx.update(|cx| cx.quit());
                             break;
                         }
-                        let mode = if polled_status.gain_mode.load(Ordering::Relaxed) {
-                            EditorMode::Gain
-                        } else {
-                            EditorMode::Identity
-                        };
+                        let mode = polled_status.mode();
+                        let gain = polled_status.gain();
 
                         if view
                             .update(cx, |this, cx| {
                                 if this.mode != mode {
                                     this.select_mode(mode);
+                                }
+                                if this.gain_drag.is_none() {
+                                    this.gain = gain;
                                 }
                                 cx.notify();
                             })
@@ -302,12 +328,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     })
                     .detach();
                     EditorView {
+                        mode: status.mode(),
+                        gain: status.gain(),
                         status,
-                        mode: EditorMode::Identity,
-                        gain: 1.0,
                         gain_drag: None,
                         _embedding: connection,
-                        mode_tx: mode_tx,
+                        edit_tx,
                     }
                 })
             },

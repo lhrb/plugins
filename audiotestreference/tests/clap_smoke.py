@@ -5,6 +5,7 @@ No DAW, editor, user assets, or analyzer. Not Identity certification.
 import ctypes as C
 from pathlib import Path
 import sys
+from threading import Event
 
 P = C.c_void_p
 U = C.c_uint32
@@ -39,6 +40,8 @@ Host = record("Host", [("version", Version), ("data", P)] +
               [("extension", CB(P, P, S)), ("restart", CB(None, P)),
                ("process", CB(None, P)), ("callback", CB(None, P))])
 ThreadCheck = record("ThreadCheck", [("main", CB(B, P)), ("audio", CB(B, P))])
+HostParams = record("HostParams", [("rescan", CB(None, P, U)), ("clear", CB(None, P, U, U)),
+                                   ("request_flush", CB(None, P))])
 InputEvents = record("InputEvents", [("ctx", P), ("size", CB(U, P)),
                                      ("get", CB(P, P, U))])
 OutputEvents = record("OutputEvents", [("ctx", P), ("push", CB(B, P, P))])
@@ -63,8 +66,11 @@ def main(editor_check=None):
     path = Path(sys.argv[1]).resolve()
     audio_thread = False
     check = instance(ThreadCheck, lambda _: not audio_thread, lambda _: audio_thread)
+    flush_requested = Event()
+    params = instance(HostParams, lambda *_: None, lambda *_: None, lambda _: flush_requested.set())
+    extensions = {b"clap.thread-check": C.addressof(check), b"clap.params": C.addressof(params)}
     host = instance(Host, Version(1, 2, 2), None, b"Shell smoke", b"AudioTestReference", b"", b"1",
-                    lambda _, name: C.addressof(check) if name == b"clap.thread-check" else None,
+                    lambda _, name: extensions.get(name),
                     lambda _: None, lambda _: None, lambda _: None)
     lib = C.CDLL(str(path))
     entry = Entry.in_dll(lib, "clap_entry")
@@ -117,7 +123,7 @@ def main(editor_check=None):
         audio_thread = False
         plugin.deactivate(ptr)
     if editor_check is not None:
-        editor_check(ptr, plugin)
+        editor_check(ptr, plugin, flush_requested)
     plugin.destroy(ptr)
     entry.deinit()
     print("PASS: CLAP identity/version, stereo float32 ports, rate rejection, zero latency, finite/safety samples, separate/in-place buffers, lifecycle (no DAW).")

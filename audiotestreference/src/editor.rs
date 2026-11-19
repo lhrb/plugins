@@ -1,4 +1,4 @@
-//! Host-side helper ownership. Never called by DSP; no GUI executor or host callback capture.
+//! Host-side helper ownership and parameter routing. Never called by DSP.
 use nih_plug::prelude::*;
 use std::{
     any::Any,
@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-use crate::{AudioTestReference, HostMode, PluginParams, SetModeTask};
+use crate::{AudioTestReference, HostMode, ParameterEdit, PluginParams, SetParameterTask};
 
 fn helper_path() -> Option<PathBuf> {
     // SAFETY: dladdr fills info on success; dli_fname is a NUL-terminated library path.
@@ -51,7 +51,7 @@ impl EditorBridge {
             params,
             fault,
             scale: AtomicU32::new(1.0f32.to_bits()),
-            executor: executor,
+            executor,
         }
     }
 }
@@ -103,7 +103,12 @@ impl Editor for EditorBridge {
                     HostMode::Gain => b'G',
                 };
 
-                if to_helper.write_all(&[fault_byte, mode_byte]).is_err() {
+                // Status frame: fault byte, mode byte, little-endian plain gain.
+                let [a, b, c, d] = params.gain.unmodulated_plain_value().to_le_bytes();
+                if to_helper
+                    .write_all(&[fault_byte, mode_byte, a, b, c, d])
+                    .is_err()
+                {
                     break;
                 }
                 thread::sleep(Duration::from_millis(16));
@@ -111,23 +116,26 @@ impl Editor for EditorBridge {
         });
 
         let executor = self.executor.clone();
-        let weack_context = Arc::downgrade(&cx);
+        let weak_context = Arc::downgrade(&cx);
         let mut from_helper = child.stdout.take().expect("piped helper stdout");
         let reader = thread::spawn(move || {
-            let mut message = [0u8; 1];
+            // Edit frame: tag byte and four payload bytes (unused for mode edits).
+            let mut message = [0u8; 5];
             while from_helper.read_exact(&mut message).is_ok() {
-                let mode = match message[0] {
-                    b'I' => HostMode::Identity,
-                    b'G' => HostMode::Gain,
-                    byte => {
-                        eprintln!("unknown {byte}");
+                let [tag, payload @ ..] = message;
+                let edit = match tag {
+                    b'I' => ParameterEdit::Mode(HostMode::Identity),
+                    b'G' => ParameterEdit::Mode(HostMode::Gain),
+                    b'V' => ParameterEdit::Gain(f32::from_le_bytes(payload)),
+                    _ => {
+                        eprintln!("AudioTestReference: unknown editor edit tag {tag}");
                         continue;
                     }
                 };
 
-                executor.execute_gui(SetModeTask {
-                    mode,
-                    context: weack_context.clone(),
+                executor.execute_gui(SetParameterTask {
+                    edit,
+                    context: weak_context.clone(),
                 });
             }
         });
