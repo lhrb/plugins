@@ -1,12 +1,6 @@
-# AudioTestReference — Slice 1 experiment
+# AudioTestReference
 
-A standalone Rust CLAP shell with its actual bundled GPUI editor embedded as an X11 child.
-This is **not** the eight-mode reference plugin or certified Identity implementation.
-Only stereo float32 pass-through is implemented, at 44,100–192,000 Hz, with zero reported compensation latency.
-Finite samples retain their bits, including signed zero and values outside ±1.
-Nonfinite input becomes zero; a per-instance fault latch appears in the editor until host reset/activation.
-DSP works without an editor and never launches processes, allocates, locks or performs I/O.
-The helper owns GPUI, not audio devices.
+Experimental Rust CLAP plugin with Identity, Gain and a bundled X11 GPUI editor. It processes stereo float32 at 44,100–192,000 Hz and reports zero compensation latency. DSP works without the editor. See the [development plan](../docs/features/audio-test-reference/plan.md) and [processing contract](../docs/features/audio-test-reference/reference.md).
 
 ## Build
 
@@ -65,14 +59,13 @@ Use an X11 session, or a host that supplies X11 parents under XWayland; native W
 4. Inspect Bitwig's reported plugin latency and record **0 samples** or the actual result.
 5. Open the custom editor using Bitwig's plugin-window control.
    Confirm the GPUI panel appears **inside the host editor**, not as a separate application window.
-   It should show the experiment/version, stereo pass-through and zero-latency labels; there are no mode controls.
+   Select Gain and change its value. Check that the host and editor agree on the mode and gain.
 6. Close and reopen the editor at least three times while audio plays.
    Confirm audio continues, the child window disappears on close, and no helper remains after the last close.
    On Linux, `ps -eo pid,args | grep '[a]udio-test-reference-editor --parent'` can inspect helpers without controlling the UI.
 7. Remove the plugin, close the disposable project and quit Bitwig normally.
    Record crashes, stuck windows, audio interruptions, stderr errors, and orphan helpers, including negative results.
-8. Record running Bitwig version, session/backend, audio rate, display scaling and GPU/driver in the [experiment log](../docs/features/audio-test-reference/experiment.md).
-   Review proceed/revise/stop before authorizing Slice 2.
+8. Record the running Bitwig version, session/backend, audio rate, display scaling and GPU/driver with the results.
 
 If the panel is blank, launch Bitwig from a terminal and capture inherited stderr.
 A missing/unlaunchable helper, unsupported parent, or renderer failure reports outside the audio callback and does not change DSP.
@@ -92,9 +85,8 @@ timeout 75s python3 tests/gui_smoke.py target/bundled/audio-test-reference.clap
 ```
 
 The ABI smoke checks stereo float32 port advertisement, supported-rate boundaries, zero latency, selected finite/nonfinite fixtures, separate/in-place buffers and lifecycle.
-The optional mechanism probe attaches/destroys the actual helper through CLAP three times.
+The optional GUI probe attaches and destroys the helper through CLAP three times. To test Gain edits with `--gain-edit`, use an isolated Xvfb display with `xdotool` and a Vulkan driver that can present there.
 Neither proves Bitwig integration, exhaustive Identity, concurrent processing/editor behavior, failure recovery, resource budgets or arbitrary-host compatibility.
 Xvfb requires a suitable software Vulkan driver; this machine's Xvfb probe cannot present with its hardware-only driver setup.
 
 Implementation: `src/domain.rs` owns framework-free sample/rate rules; `src/lib.rs` adapts CLAP through NIH-plug; `src/editor.rs` owns helper lifecycle; `src/bin/editor.rs` and `src/embedding.rs` own GPUI/X11.
-See [decisions](../docs/features/audio-test-reference/decisions.md) and [observations](../docs/features/audio-test-reference/experiment.md).

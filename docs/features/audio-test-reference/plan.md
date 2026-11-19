@@ -1,60 +1,33 @@
-# AudioTestReference — reference audio plugin
+# AudioTestReference
 
-Goal: Build a Rust CLAP/VST3 plugin in `audiotestreference/` with embedded GPUI and mathematically specified processing for developing `analyse/`.
+Goal: Build a Linux Rust CLAP/VST3 reference plugin with eight reproducible stereo modes for developing `analyse/`. The [processing contract](reference.md) defines the algorithms and guarantees. Keep DSP independent of the plugin APIs and GPUI. Do not change `analyse/` or depend on another plugin's internals.
 
-## Decisions and assumptions
+## Status
 
-- Target the current Linux system; host-supplied audio, no editor-owned device or generator. DSP works without the editor.
-- [reference.md](reference.md) owns the accepted eight-mode algorithms, parameters, precision, reset/state, latency, fault and verification contracts. Host-triggered reset semantics remain open.
-- Follow `architecture.md`: keep DSP independent of GPUI/plugin APIs. Reuse proven local approaches without shared frameworks or dependencies on other plugins' internals.
-- [analyse's intended capabilities](../../../analyse/README.md) guide coverage, not a dependency or authorization to change it. Preserve existing plugin/analyzer contracts, measurements and infrastructure.
-- GPUI is preferred, not proven for arbitrary hosts or guaranteed bug-free. Prioritize measured responsiveness and reliability; minimize click-to-visible editor opening time. The requester observed an opening delay in Slice 1; measure cold/warm startup before choosing optimizations. Approved: bundled native helper with X11/XWayland embedding, following `nam-linux-port/src/editor.rs`; native Wayland is deferred.
-- Start with CLAP in Bitwig; VST3 remains required for completion. Retain the bounded prototype only if suitable for the product.
+Slices 1–3 are implemented: CLAP shell with embedded GPUI, Identity, and Gain with host parameters and editor edits routed back to the host. The requester accepted the shell in Bitwig. Existing checks cover Identity/Gain fixtures, CLAP smoke, and an optional GPUI-to-CLAP Gain edit probe. Full host qualification remains open. The CLAP adapter currently reads parameters per block (`SAMPLE_ACCURATE_AUTOMATION = false`); that does not meet the sample-offset contract for stateful modes.
 
-## Open questions
+The bundled GPUI helper embeds through X11/XWayland; native Wayland is deferred. The pinned NIH-plug wrapper maps at attachment and returns false from CLAP `show`/`hide`; hosts requiring those callbacks are unsupported. XWayland is not qualified. The current CLAP identity (`org.audio-test-reference.shell-experiment`) is experimental, not a production session compatibility promise.
 
-None blocking the shell. Finalize host-triggered reset edge/event semantics before introducing reset; independently validate per-mode numerical limits before claiming verification.
+## Next: 4 — Delay and reproducible reset
 
-| Order | Outcome | Depends on | Status |
-| --- | --- | --- | --- |
-| 1 | Load the CLAP shell and embedded editor in Bitwig | — | Done |
-| 2 | Verify the Identity contract | 1 | — |
-| 3 | Gain end to end: DSP, editor, host automation/readback | 2 | — |
-| 4 | Delay and reproducible reset | 3; reset contract | — |
-| 5 | Low-pass with cutoff/Q and read-only coefficients | 4 | — |
-| 6 | Harmonics | 3 | — |
-| 7 | Clipper | 3 | — |
-| 8 | Linked stereo Compressor | 4 | — |
-| 9 | Stereo Matrix | 3 | — |
-| 10 | Refine mode workflow, controls and state recall | 4–9 | — |
-| 11 | Complete format, host/analyzer and lifecycle qualification | 10 | — |
+Depends on Slice 3. **Open decision:** agree how the host or analyzer issues an explicit reset, including offset, repeat and re-arm semantics, before implementing that control. This is separate from the existing host lifecycle reset callback.
 
-`—` means provisional, not authorized. Add basic usable controls with each mode; reserve cohesive UX refinement for later. Detail only the next slice after review.
+- Add stereo Delay with integer `N` (0–192,000 samples, default 0). Expose the effective value in the host and editor. Report zero compensation latency; show `N` separately as intentional signal delay.
+- Provide explicit reset from the host and editor. Apply events and clear histories as specified in [the processing contract](reference.md). Mode changes and explicit reset clear all history; changing `N` clears only delay history, even while inactive. An unchanged `N` does not clear a running delay. Reset preserves settings; state recall restores settings but not history.
+- Keep the audio callback free of allocation, locks, I/O and editor dependencies. Preserve Identity/Gain behavior and parameter IDs.
 
-Next: None.
-Review: Slice 1 accepted; [experiment.md](experiment.md) records evidence and accepted gaps. Editor opening speed remains a follow-up requirement.
+**Done when:** Independent exact vectors verify asymmetric stereo impulses, `N=0`, maximum `N`, and mid-block mode/length/reset events across different block partitions. Verify unchanged-value events, activation, lifecycle reset, state recall and the agreed explicit reset control. Exercise the CLAP adapter with the same expectations. In Bitwig, check host/editor readback, repeatable reset, zero reported latency and measured `N`-sample delay. Review that evidence before starting Low-pass.
 
-## Completion contract
+## Later (provisional)
 
-Product requirements retained from the original plan, not another implementation slice.
+| Slice | Outcome | Depends on |
+| --- | --- | --- |
+| 5 | Low-pass with cutoff/Q and read-only coefficients | 4 |
+| 6 | Harmonics | 3 |
+| 7 | Clipper | 3 |
+| 8 | Linked stereo Compressor | 4 |
+| 9 | Stereo Matrix | 3 |
+| 10 | Refine workflow, controls and state recall | 4–9 |
+| 11 | Qualify formats, hosts and analyzer integration | 10 |
 
-### Outcome
-
-All eight reference modes are reproducibly configurable through the host or embedded editor.
-
-### Guarantees
-
-- Implement [reference.md](reference.md), including editor-independent processing, reset/history rules, numerical boundaries and zero compensation latency with intentional Delay samples shown separately.
-- Host parameters and GPUI agree on mode/effective values. Use stable parameter IDs/units and versioned state; recall every mode's settings without the editor, clearing signal history. New instances start in Identity.
-- Provide editor and host-triggerable reset without changing settings; document approved edge/event semantics for analyzer use. Host reset/activation provide the same zero-state guarantee.
-- Editor closure/failure cannot alter DSP; instances remain independent.
-- Publish algorithm/version/parameter reference, build/install instructions, identifiable CLAP/VST3 artifacts, runtime dependencies and reproducible host/analyzer checks.
-
-### Done when
-
-- Independent expected-value tests cover every reference guarantee, including event/block invariance and numerical boundaries. Exercise Gain, Delay, Low-pass, nonlinear, compressor and matrix configurations through plugin adapters against the same independent oracle.
-- Real-host evidence covers both formats: stereo audio, embedded editor, gestures/readback, reset, persistence, reported zero latency, actual delay, repeated editor lifecycle, two simultaneous instances, renderer failure and clean shutdown.
-- Verify focus/keyboard, numeric entry, scaling, resizing and automation feedback. Record cold/warm opening time, input-to-visible-update latency, idle CPU and per-instance memory/GPU costs on this machine; review before broad GPUI adoption.
-- Through existing `analyse/` CLAP hosting, reproduce supported Identity/Gain/Delay/Low-pass checks and zero reported latency. No analyzer-native editor or VST3 hosting additions; do not claim unimplemented harmonic/dynamics/VST3 analyzer coverage. Record limitations and untested hosts/backends.
-
-Deferred: analyzer development, native Wayland, other OSes, mono/multichannel, float64 host audio, raw-coefficient editing unless requested, standalone devices, oversampling and broader compatibility certification.
+Completion requires versioned state and documented algorithms, controls and reset semantics; identifiable CLAP/VST3 bundles with build/install instructions; and independent DSP and adapter verification. Check both formats in real hosts for automation/readback, reset, persistence, latency, editor lifecycle and failure, concurrent instances and clean shutdown. Check focus, numeric entry, scaling and resizing. Measure cold/warm editor opening, input-to-visible latency, idle CPU and per-instance memory/GPU cost before tuning or expanding GPUI adoption; the requester noticed an opening delay in Bitwig. Reproduce supported Identity/Gain/Delay/Low-pass and zero-latency checks through existing `analyse/` CLAP hosting. Record unsupported and untested configurations; no analyzer changes, native Wayland or broader platform qualification in scope.

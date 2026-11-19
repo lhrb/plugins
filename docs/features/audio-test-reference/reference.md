@@ -1,6 +1,6 @@
 # AudioTestReference processing contract
 
-Status: Processing approved with the reset/tolerance rules below; [plan.md](plan.md) approves X11/XWayland helper embedding. Finalize host-triggered reset semantics before introducing reset. Behavior contract, not implementation.
+Approved behavior contract, not implementation status. See [plan.md](plan.md) for the open explicit-reset decision.
 
 ## Domain and precision
 
@@ -13,8 +13,6 @@ Status: Processing approved with the reset/tolerance rules below; [plan.md](plan
 - Reject invalid configurations atomically, retaining the last valid one; never silently clamp accepted mathematical parameters. Unknown modes/incompatible saved-state versions fail explicitly without changing configuration.
 - Replace nonfinite input with zero. Nonfinite channel output/state or output beyond finite binary32 range produces zero and clears that channel's histories before the next sample. A shared compressor-envelope fault clears both channels and outputs zero for that frame. Indicate faults outside the audio callback. Do not saturate ordinary finite output to ±1.
 - Every mode, including Delay, reports **zero host compensation latency**. Separately expose intentional delay N in samples; reported zero does not mean no signal delay. Biquad/envelope phase/settling is not compensation latency.
-
-Favor deterministic, inspectable behavior; defer variants until justified by a measurement gap.
 
 ## Parameters
 
@@ -140,4 +138,4 @@ No row normalization, pan law, or implicit clipping.
 - Check compressor attack/release against the envelope recurrence, knee equality, zero times, R=1, silence and asymmetric stereo peaks. Verify preserved history across threshold/ratio/time/coefficient changes, selective delay reset and full mode-change/explicit reset. Compare eventful sequences with an independent stateful reference, not only fresh-state vectors.
 - Cover activation/rejection boundaries, state recall/malformed state, nonfinite samples/parameters, overflow recovery, multiple instances and block-boundary events. No allocation, locks, I/O, GUI dependency or process launching in audio callbacks.
 
-Out of scope: analyzer measurement features, analyzer accuracy inferred solely from shared code, sound-quality optimization, oversampling, cross-architecture bit identity, arbitrary injected live state and compatibility with unreleased prototypes. Published identities, parameter IDs/units, state format and algorithm semantics are compatibility contracts; incompatible changes require explicit versioning.
+Published identities, parameter IDs/units, state format and algorithm semantics are compatibility contracts; incompatible changes require explicit versioning. Cross-architecture bit identity and compatibility with unreleased prototypes are not required. Shared code alone is not evidence of analyzer accuracy.
