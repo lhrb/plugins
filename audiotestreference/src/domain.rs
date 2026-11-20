@@ -1,17 +1,22 @@
 //! Framework-independent shell DSP. No history, parameters, or mode machinery.
+mod delay;
 mod gain;
+
+use crate::domain::delay::Delay;
 
 pub use self::gain::{gain, Gain};
 
 #[derive(Debug, PartialEq)]
 pub enum ConfigError {
     InvalidGain,
+    InvalidDelay,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Mode {
     Identity,
     Gain { gain: Gain },
+    Delay { n: usize },
 }
 
 #[derive(Debug, PartialEq)]
@@ -20,24 +25,44 @@ pub struct SampleResult {
     pub faulted: bool,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct Processor {
     mode: Mode,
+    delay: Delay,
 }
 
 impl Processor {
     pub fn new() -> Self {
         Self {
             mode: Mode::Identity,
+            delay: Delay::new(0).expect("zero is valid delay lenght"),
         }
     }
 
-    pub fn set_mode(&mut self, mode: Mode) {
+    pub fn set_mode(&mut self, mode: Mode) -> Result<(), ConfigError> {
+        if let Mode::Delay { n: len } = &mode {
+            let n: usize = *len;
+            self.delay.change_delay(n)?;
+        }
         self.mode = mode;
+        Ok(())
     }
 
     pub fn process_frame(&mut self, frame: [f32; 2]) -> SampleResult {
-        pass_frame(frame, &self.mode)
+        let (frame64, input_faulted) = convert_32_to_64(frame);
+
+        let result = match &self.mode {
+            Mode::Identity => identity(frame64),
+            Mode::Gain { gain: factor } => gain(frame64, factor),
+            Mode::Delay { .. } => self.delay.process_frame(frame64),
+        };
+
+        let (frame32, result_faulted) = convert_64_to_32(result);
+
+        SampleResult {
+            output: frame32,
+            faulted: input_faulted || result_faulted,
+        }
     }
 }
 
@@ -47,42 +72,40 @@ impl Default for Processor {
     }
 }
 
-pub fn pass_frame(frame: [f32; 2], mode: &Mode) -> SampleResult {
-    if !frame[0].is_finite() || !frame[1].is_finite() {
-        return SampleResult {
-            output: [0.0, 0.0],
-            faulted: true,
-        };
-    }
-
-    let result = match mode {
-        Mode::Identity => identity(frame),
-        Mode::Gain { gain: factor } => gain(frame, factor),
-    };
-
-    if !result[0].is_finite()
-        || result[0].abs() > f64::from(f32::MAX)
-        || !result[1].is_finite()
-        || result[1].abs() > f64::from(f32::MAX)
-    {
-        return SampleResult {
-            output: [0.0, 0.0],
-            faulted: true,
-        };
-    }
-
-    SampleResult {
-        output: [result[0] as f32, result[1] as f32],
-        faulted: false,
-    }
-}
-
-pub fn identity(frame: [f32; 2]) -> [f64; 2] {
-    [f64::from(frame[0]), f64::from(frame[1])]
+pub fn identity(frame: [f64; 2]) -> [f64; 2] {
+    frame
 }
 
 pub fn supports_sample_rate(rate: f32) -> bool {
     (44_100.0..=192_000.0).contains(&rate)
+}
+
+fn convert_32_to_64(frame: [f32; 2]) -> ([f64; 2], bool) {
+    let [(left, left_fault), (right, right_fault)] = frame.map(|sample| {
+        if sample.is_finite() {
+            (f64::from(sample), false)
+        } else {
+            (0.0, true)
+        }
+    });
+
+    let frame64 = [left, right];
+    let input_faulted = left_fault || right_fault;
+    (frame64, input_faulted)
+}
+
+fn convert_64_to_32(frame: [f64; 2]) -> ([f32; 2], bool) {
+    let [(left, left_fault), (right, right_fault)] = frame.map(|sample| {
+        if sample.is_finite() && sample.abs() <= f64::from(f32::MAX) {
+            (sample as f32, false)
+        } else {
+            (0.0, true)
+        }
+    });
+
+    let frame32 = [left, right];
+    let input_faulted = left_fault || right_fault;
+    (frame32, input_faulted)
 }
 
 #[cfg(test)]
@@ -91,35 +114,62 @@ mod tests {
 
     #[test]
     fn finite_bits_and_nonfinite_safety() {
-        let mode = Mode::Identity;
+        let mut processor = Processor::new();
 
-        for bits in [
-            0, 0x80000000, 1, 0x80000001, 0x3f800000, 0xc0200000, 0x7f7fffff,
+        for sample in [
+            0.0,
+            -0.0,
+            f32::from_bits(1),
+            f32::from_bits(0x80000001),
+            1.0,
+            -2.5,
+            f32::MAX,
+            -f32::MAX,
         ] {
-            let sample = f32::from_bits(bits);
             for frame in [[sample, -0.5], [-0.5, sample]] {
-                let SampleResult { output, faulted } = pass_frame(frame, &mode);
+                let SampleResult { output, faulted } = processor.process_frame(frame);
                 assert_eq!(output.map(f32::to_bits), frame.map(f32::to_bits));
-                assert!(!faulted);
+                assert!(!faulted, "frame {frame:?}");
             }
         }
         for input in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            for frame in [[input, -0.5], [-0.5, input]] {
+            for (frame, output) in [([input, -0.5], [0.0, -0.5]), ([-0.5, input], [-0.5, 0.0])] {
                 assert_eq!(
-                    pass_frame(frame, &mode),
+                    processor.process_frame(frame),
                     SampleResult {
-                        output: [0.0, 0.0],
+                        output,
                         faulted: true,
-                    }
+                    },
+                    "frame {frame:?}"
                 );
                 assert_eq!(
-                    pass_frame([-0.5, 0.25], &mode),
+                    processor.process_frame([-0.5, 0.25]),
                     SampleResult {
                         output: [-0.5, 0.25],
                         faulted: false,
                     }
                 );
             }
+        }
+    }
+
+    #[test]
+    fn delay_advances_on_fault_and_queues_healthy_channel() {
+        let mut processor = Processor::new();
+        processor
+            .set_mode(Mode::Delay { n: 1 })
+            .expect("one frame is a valid delay");
+
+        for (frame, output, faulted) in [
+            ([1.0, -0.5], [0.0, 0.0], false),
+            ([f32::NAN, 0.25], [1.0, -0.5], true),
+            ([0.0, 0.0], [0.0, 0.25], false),
+        ] {
+            assert_eq!(
+                processor.process_frame(frame),
+                SampleResult { output, faulted },
+                "frame {frame:?}"
+            );
         }
     }
 
@@ -139,7 +189,7 @@ mod tests {
         let gain_mode = Mode::Gain {
             gain: Gain::new(2.0).expect("valid"),
         };
-        p.set_mode(gain_mode);
+        p.set_mode(gain_mode).expect("valid gain mode");
 
         let input = [[0.0, 0.5], [-0.5, 0.0]];
         let expected = [[0.0, 1.0], [-1.0, 0.0]];

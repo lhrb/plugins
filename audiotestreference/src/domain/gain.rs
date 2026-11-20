@@ -17,16 +17,14 @@ impl Gain {
     }
 }
 
-pub fn gain(frame: [f32; 2], factor: &Gain) -> [f64; 2] {
-    let left = f64::from(frame[0]);
-    let right = f64::from(frame[1]);
-    [left * factor.value(), right * factor.value()]
+pub fn gain(frame: [f64; 2], factor: &Gain) -> [f64; 2] {
+    [frame[0] * factor.value(), frame[1] * factor.value()]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{pass_frame, Mode, SampleResult};
+    use crate::domain::{Mode, Processor, SampleResult};
 
     #[test]
     fn test_gain() {
@@ -41,25 +39,22 @@ mod tests {
     }
 
     #[test]
-    fn call_gain() {
-        let g = Gain::new(2.0).expect("valid gain");
+    fn gain_overflow_zeros_only_the_affected_channel() {
+        let mut processor = Processor::new();
+        let gain = Gain::new(2.0).expect("valid gain");
+        processor
+            .set_mode(Mode::Gain { gain })
+            .expect("valid gain mode");
 
-        let mode = &Mode::Gain { gain: g };
-        assert_eq!(
-            pass_frame([0.5, -0.25], mode),
-            SampleResult {
-                output: [1.0, -0.5],
-                faulted: false,
-            }
-        );
-
-        for frame in [[f32::MAX, -0.25], [0.5, -f32::MAX]] {
+        for (frame, output, faulted) in [
+            ([0.5, -0.25], [1.0, -0.5], false),
+            ([f32::MAX, -0.25], [0.0, -0.5], true),
+            ([0.5, -f32::MAX], [1.0, 0.0], true),
+        ] {
             assert_eq!(
-                pass_frame(frame, mode),
-                SampleResult {
-                    output: [0.0, 0.0],
-                    faulted: true,
-                }
+                processor.process_frame(frame),
+                SampleResult { output, faulted },
+                "frame {frame:?}"
             );
         }
     }
