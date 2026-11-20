@@ -1,10 +1,13 @@
-//! Framework-independent shell DSP. No history, parameters, or mode machinery.
+//! Framework-independent stereo DSP and mode state.
 mod delay;
 mod gain;
 
 use crate::domain::delay::Delay;
 
-pub use self::gain::{gain, Gain};
+pub use self::{
+    delay::MAX_DELAY_SAMPLES,
+    gain::{gain, Gain},
+};
 
 #[derive(Debug, PartialEq)]
 pub enum ConfigError {
@@ -35,17 +38,31 @@ impl Processor {
     pub fn new() -> Self {
         Self {
             mode: Mode::Identity,
-            delay: Delay::new(0).expect("zero is valid delay lenght"),
+            delay: Delay::new(0).expect("zero is a valid delay length"),
         }
     }
 
     pub fn set_mode(&mut self, mode: Mode) -> Result<(), ConfigError> {
-        if let Mode::Delay { n: len } = &mode {
-            let n: usize = *len;
+        if let Mode::Delay { n } = mode {
             self.delay.change_delay(n)?;
+        }
+        if std::mem::discriminant(&self.mode) != std::mem::discriminant(&mode) {
+            self.reset();
         }
         self.mode = mode;
         Ok(())
+    }
+
+    pub(crate) fn set_delay_samples(&mut self, n: usize) -> Result<(), ConfigError> {
+        self.delay.change_delay(n)?;
+        if let Mode::Delay { n: active_n } = &mut self.mode {
+            *active_n = n;
+        }
+        Ok(())
+    }
+
+    pub fn reset(&mut self) {
+        self.delay.reset();
     }
 
     pub fn process_frame(&mut self, frame: [f32; 2]) -> SampleResult {
@@ -171,6 +188,30 @@ mod tests {
                 "frame {frame:?}"
             );
         }
+    }
+
+    #[test]
+    fn unchanged_config_preserves_delay_but_mode_changes_and_reset_clear_it() {
+        let mut processor = Processor::new();
+        let silence = [0.0; 2];
+        let impulse = [1.0, -0.5];
+
+        processor.set_mode(Mode::Delay { n: 1 }).unwrap();
+        assert_eq!(processor.process_frame(impulse).output, silence);
+        processor.set_mode(Mode::Delay { n: 1 }).unwrap();
+        assert_eq!(processor.process_frame(impulse).output, impulse);
+
+        processor.set_mode(Mode::Identity).unwrap();
+        processor.set_mode(Mode::Delay { n: 1 }).unwrap();
+        assert_eq!(processor.process_frame(impulse).output, silence);
+
+        processor.set_mode(Mode::Identity).unwrap();
+        processor.set_delay_samples(2).unwrap();
+        processor.set_mode(Mode::Delay { n: 2 }).unwrap();
+        assert_eq!(processor.process_frame(impulse).output, silence);
+        processor.reset();
+        assert_eq!(processor.process_frame(silence).output, silence);
+        assert_eq!(processor.process_frame(silence).output, silence);
     }
 
     #[test]

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Optional real plugin/helper embedding smoke. No DAW.
 Adapted from nam-linux-port (GPL-3.0-or-later).
-Pass --gain-edit after the CLAP path to also test mouse input with xdotool.
+Pass --gain-edit or --delay-edit after the CLAP path to test mouse input with xdotool.
 Run input automation on an isolated Xvfb display, not a desktop session.
 """
 import ctypes as C
 import subprocess
 import sys
 import time
-from clap_smoke import B, CB, D, P, S, U, InputEvents, OutputEvents, instance, main, record
+from clap_smoke import (B, CB, D, P, S, U, InputEvents, OutputEvents, delay_info,
+                        instance, main, parameter_info, record)
 
 Gui = record("Gui", [
     ("supported", CB(B, P, S, B)), ("preferred", P), ("create", CB(B, P, S, B)),
@@ -24,45 +25,36 @@ class Handle(C.Union):
 
 
 Window = record("Window", [("api", S), ("handle", Handle)])
-ParamInfo = record("ParamInfo", [("id", U), ("flags", U), ("cookie", P),
-                                 ("name", C.c_char * 256), ("module", C.c_char * 1024),
-                                 ("min_value", D), ("max_value", D), ("default_value", D)])
-Params = record("Params", [("count", CB(U, P)), ("get_info", CB(B, P, U, P)),
-                            ("get_value", CB(B, P, U, P)), ("value_to_text", CB(B, P, U, D, P, U)),
-                            ("text_to_value", P), ("flush", CB(None, P, P, P))])
 
 
-def check_gain_edit(ptr, plugin, flush_requested, child):
-    params_ext = plugin.extension(ptr, b"clap.params")
-    assert params_ext, "plugin must expose CLAP parameters"
-    params = C.cast(params_ext, C.POINTER(Params)).contents
-    ids = {}
-    for index in range(params.count(ptr)):
-        info = ParamInfo()
-        assert params.get_info(ptr, index, C.byref(info))
-        ids[info.name] = info.id
-    assert {b"Mode", b"Gain"} <= ids.keys(), ids
-
+def check_parameter_edit(ptr, plugin, flush_requested, child, option):
+    params, infos = parameter_info(ptr, plugin)
     inputs = instance(InputEvents, None, lambda _: 0, lambda *_: None)
     outputs = instance(OutputEvents, None, lambda *_: True)
 
-    def value(label):
+    def value(label, *, formatted):
+        param_id = infos[label].id
         raw = D()
+        assert params.get_value(ptr, param_id, C.byref(raw)), label
+        if not formatted:
+            return raw.value
         text = C.create_string_buffer(64)
-        assert params.get_value(ptr, ids[label], C.byref(raw)), label
-        assert params.value_to_text(ptr, ids[label], raw, text, len(text)), label
-        return text.value
+        assert params.value_to_text(ptr, param_id, raw, text, len(text)), label
+        return text.value.decode()
 
-    def wait_for_value(label, matches, expected):
+    def pump():
+        plugin.on_main_thread(ptr)
+        if flush_requested.is_set():
+            flush_requested.clear()
+            params.flush(ptr, C.byref(inputs), C.byref(outputs))
+
+    def wait_for_value(label, matches, expected, *, formatted=True):
         deadline = time.monotonic() + 5
         while True:
-            plugin.on_main_thread(ptr)
-            if flush_requested.is_set():
-                flush_requested.clear()
-                params.flush(ptr, C.byref(inputs), C.byref(outputs))
-            actual = value(label)
+            pump()
+            actual = value(label, formatted=formatted)
             if matches(actual):
-                return actual.decode()
+                return actual
             assert time.monotonic() < deadline, f"expected CLAP {label.decode()} {expected}, got {actual!r}"
             time.sleep(0.02)
 
@@ -70,15 +62,36 @@ def check_gain_edit(ptr, plugin, flush_requested, child):
         subprocess.run(["xdotool", "mousemove", "--window", str(child), str(x), str(y), "click", "1"],
                        check=True, timeout=5)
 
-    assert value(b"Mode") == b"Identity"
-    assert float(value(b"Gain")) == 1.0
-    click(165, 102)  # Gain mode button at 660×430, scale 1.
-    wait_for_value(b"Mode", lambda text: text == b"Gain", "mode Gain after clicking Gain")
-    time.sleep(0.25)  # Allow the helper to render the slider after the mode round trip.
-    click(185, 186)  # Left quarter of the slider, i.e. approximately -8×.
-    gain = wait_for_value(b"Gain", lambda text: -9.0 < float(text) < -7.0,
-                          "near -8× after clicking the slider")
-    print(f"PASS: real GPUI Gain slider changed the CLAP parameter to {gain}×")
+    def select_mode(x, name):
+        click(x, 102)  # Mode row at 660×430, scale 1.
+        wait_for_value(b"Mode", lambda text: text == name, f"{name} after clicking {name}")
+        time.sleep(0.25)  # Allow the helper to render after the mode round trip.
+
+    assert value(b"Mode", formatted=True) == "Identity"
+    if option == "--gain-edit":
+        assert float(value(b"Gain", formatted=True)) == 1.0
+        select_mode(165, "Gain")
+        click(185, 186)  # Left quarter of the track, i.e. approximately -8×.
+        gain = wait_for_value(b"Gain", lambda text: -9.0 < float(text) < -7.0,
+                              "near -8× after clicking the slider")
+        print(f"PASS: real GPUI Gain slider changed the CLAP parameter to {gain}×")
+        return
+
+    delay_label = delay_info(infos).name
+    assert value(delay_label, formatted=False) == 0
+    select_mode(235, "Delay")
+    click(185, 186)  # Within the Delay track.
+    delay = wait_for_value(delay_label, lambda samples: 0 < samples < 192_000,
+                           "a nonzero interior value after clicking the slider", formatted=False)
+
+    select_mode(80, "Identity")
+    click(465, 186)  # A different position on the former track must not edit Delay.
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        pump()
+        assert value(delay_label, formatted=False) == delay, "Delay slider responded in Identity mode"
+        time.sleep(0.02)
+    print(f"PASS: real GPUI Delay slider changed CLAP to {round(delay)} samples and was inactive in Identity.")
 
 
 def check_editor(ptr, plugin, flush_requested):
@@ -135,8 +148,8 @@ def check_editor(ptr, plugin, flush_requested):
             print(f"OBSERVATION: CLAP show={gui.show(ptr)}, hide={gui.hide(ptr)} (not certified)")
             (child,) = wait_for(1)
             time.sleep(0.5)  # Allow GPUI to submit initial frames, not just create a window.
-            if iteration == 0 and sys.argv[2:] == ["--gain-edit"]:
-                check_gain_edit(ptr, plugin, flush_requested, child)
+            if iteration == 0 and len(sys.argv) == 3:
+                check_parameter_edit(ptr, plugin, flush_requested, child, sys.argv[2])
             gui.destroy(ptr)
             created = False
             wait_for(0)
@@ -149,6 +162,6 @@ def check_editor(ptr, plugin, flush_requested):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2 or sys.argv[2:] not in ([], ["--gain-edit"]):
-        raise SystemExit(f"Usage: {sys.argv[0]} CLAP_PATH [--gain-edit]")
+    if len(sys.argv) < 2 or sys.argv[2:] not in ([], ["--gain-edit"], ["--delay-edit"]):
+        raise SystemExit(f"Usage: {sys.argv[0]} CLAP_PATH [--gain-edit | --delay-edit]")
     main(check_editor)

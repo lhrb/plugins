@@ -101,12 +101,14 @@ impl Editor for EditorBridge {
                 let mode_byte = match params.mode.value() {
                     HostMode::Identity => b'I',
                     HostMode::Gain => b'G',
+                    HostMode::Delay => b'D',
                 };
 
-                // Status frame: fault byte, mode byte, little-endian plain gain.
+                // Status frame: fault byte, mode byte, LE plain gain and delay samples.
                 let [a, b, c, d] = params.gain.unmodulated_plain_value().to_le_bytes();
+                let [e, f, g, h] = params.delay_samples.unmodulated_plain_value().to_le_bytes();
                 if to_helper
-                    .write_all(&[fault_byte, mode_byte, a, b, c, d])
+                    .write_all(&[fault_byte, mode_byte, a, b, c, d, e, f, g, h])
                     .is_err()
                 {
                     break;
@@ -126,7 +128,9 @@ impl Editor for EditorBridge {
                 let edit = match tag {
                     b'I' => ParameterEdit::Mode(HostMode::Identity),
                     b'G' => ParameterEdit::Mode(HostMode::Gain),
+                    b'D' => ParameterEdit::Mode(HostMode::Delay),
                     b'V' => ParameterEdit::Gain(f32::from_le_bytes(payload)),
+                    b'N' => ParameterEdit::DelaySamples(i32::from_le_bytes(payload)),
                     _ => {
                         eprintln!("AudioTestReference: unknown editor edit tag {tag}");
                         continue;

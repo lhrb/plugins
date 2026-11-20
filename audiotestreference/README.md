@@ -1,6 +1,8 @@
 # AudioTestReference
 
-Experimental Rust CLAP plugin with Identity, Gain and a bundled X11 GPUI editor. It processes stereo float32 at 44,100–192,000 Hz and reports zero compensation latency. DSP works without the editor. See the [development plan](../docs/features/audio-test-reference/plan.md) and [processing contract](../docs/features/audio-test-reference/reference.md).
+Experimental Rust CLAP plugin with Identity, Gain, Delay and a bundled X11 GPUI editor. It processes stereo float32 at 44,100–192,000 Hz and reports zero compensation latency. Delay Time (`delay_samples`) controls intentional signal delay from 0 to 192,000 whole samples, default 0. DSP works without the editor. See the [development plan](../docs/features/audio-test-reference/plan.md) and [processing contract](../docs/features/audio-test-reference/reference.md).
+
+This build applies parameter changes at block boundaries, not sample offsets. Delay history clears on mode or length changes, lifecycle reset, and successful state recall. There is no separate explicit reset control.
 
 ## Build
 
@@ -30,7 +32,7 @@ Both variants place these files in **`audiotestreference/target/bundled/`**:
 - `audio-test-reference-editor` (must remain executable and beside the module)
 - `SHA256SUMS`
 
-The script never installs plugins or changes DAW settings.
+The script also copies the plugin and helper to `~/.clap/`. It does not change DAW settings.
 The bundle is relocatable as a pair, not statically self-contained.
 Runtime needs glibc/libm/libgcc, X11/XCB and xkbcommon libraries, fontconfig/FreeType, installed fonts, the Vulkan loader and a working presentation-capable Vulkan driver.
 Font/graphics libraries can load dynamically and therefore do not all appear in `ldd`.
@@ -43,13 +45,7 @@ No Bitwig host behavior has been verified by the implementation agent.
 The installed package is Bitwig Studio **6.1.4-1**; confirm the running version in Bitwig's About dialog.
 Use an X11 session, or a host that supplies X11 parents under XWayland; native Wayland embedding is unsupported.
 
-1. Build the pair above, then install it explicitly if desired:
-   ```sh
-   mkdir -p ~/.clap
-   install -m755 target/bundled/audio-test-reference.clap \
-     target/bundled/audio-test-reference-editor ~/.clap/
-   ```
-   Alternatively add the absolute `target/bundled` directory to Bitwig's CLAP search paths.
+1. Build and install the pair with the script above. If `~/.clap/` is not in Bitwig's CLAP search paths, add it or use the absolute `target/bundled` directory instead.
    Avoid duplicate installations; do not move or rename the helper independently.
 2. Start Bitwig normally, rescan plugins, and insert **AudioTestReference (Shell Experiment)** on a stereo audio track in a disposable project.
    Do not save a production session against this experimental ID.
@@ -59,7 +55,7 @@ Use an X11 session, or a host that supplies X11 parents under XWayland; native W
 4. Inspect Bitwig's reported plugin latency and record **0 samples** or the actual result.
 5. Open the custom editor using Bitwig's plugin-window control.
    Confirm the GPUI panel appears **inside the host editor**, not as a separate application window.
-   Select Gain and change its value. Check that the host and editor agree on the mode and gain.
+   Select Gain and change its value. Select Delay and drag the Delay Time slider. Change Delay Time from the host too. Check that the host and editor agree on the mode and values.
 6. Close and reopen the editor at least three times while audio plays.
    Confirm audio continues, the child window disappears on close, and no helper remains after the last close.
    On Linux, `ps -eo pid,args | grep '[a]udio-test-reference-editor --parent'` can inspect helpers without controlling the UI.
@@ -84,9 +80,8 @@ python3 tests/clap_smoke.py target/bundled/audio-test-reference.clap
 timeout 75s python3 tests/gui_smoke.py target/bundled/audio-test-reference.clap
 ```
 
-The ABI smoke checks stereo float32 port advertisement, supported-rate boundaries, zero latency, selected finite/nonfinite fixtures, separate/in-place buffers and lifecycle.
-The optional GUI probe attaches and destroys the helper through CLAP three times. To test Gain edits with `--gain-edit`, use an isolated Xvfb display with `xdotool` and a Vulkan driver that can present there.
+The ABI smoke checks stereo float32 ports, supported rates, zero latency, selected finite/nonfinite fixtures, separate/in-place buffers, lifecycle, and Delay timing and history across blocks.
+The optional GUI probe attaches and destroys the helper through CLAP three times. To test sliders, pass `--gain-edit` or `--delay-edit` on an isolated Xvfb display with `xdotool` and a Vulkan driver that can present there, such as SwiftShader.
 Neither proves Bitwig integration, exhaustive Identity, concurrent processing/editor behavior, failure recovery, resource budgets or arbitrary-host compatibility.
-Xvfb requires a suitable software Vulkan driver; this machine's Xvfb probe cannot present with its hardware-only driver setup.
 
 Implementation: `src/domain.rs` owns framework-free sample/rate rules; `src/lib.rs` adapts CLAP through NIH-plug; `src/editor.rs` owns helper lifecycle; `src/bin/editor.rs` and `src/embedding.rs` own GPUI/X11.

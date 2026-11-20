@@ -1,6 +1,6 @@
 use super::ConfigError;
 
-const MAX_DELAY: usize = 192_000;
+pub const MAX_DELAY_SAMPLES: usize = 192_000;
 
 #[derive(Debug)]
 pub struct Delay {
@@ -12,13 +12,13 @@ pub struct Delay {
 
 impl Delay {
     pub fn new(n: usize) -> Result<Self, ConfigError> {
-        if n > MAX_DELAY {
+        if n > MAX_DELAY_SAMPLES {
             return Err(ConfigError::InvalidDelay);
         }
 
         Ok(Self {
-            memory: vec![[0.0f64; 2]; MAX_DELAY],
-            n: n,
+            memory: vec![[0.0f64; 2]; MAX_DELAY_SAMPLES],
+            n,
             cursor: 0,
             filled: 0,
         })
@@ -56,7 +56,7 @@ impl Delay {
             return Ok(());
         }
 
-        if n > MAX_DELAY {
+        if n > MAX_DELAY_SAMPLES {
             return Err(ConfigError::InvalidDelay);
         }
 

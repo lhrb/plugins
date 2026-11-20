@@ -7,7 +7,7 @@ use std::sync::{
     Arc,
 };
 
-use crate::domain::{Processor, SampleResult};
+use crate::domain::{Processor, SampleResult, MAX_DELAY_SAMPLES};
 
 #[derive(Enum, Clone, Copy, PartialEq, Eq)]
 enum HostMode {
@@ -15,6 +15,8 @@ enum HostMode {
     Identity,
     #[id = "gain"]
     Gain,
+    #[id = "delay"]
+    Delay,
 }
 
 #[derive(Params)]
@@ -23,6 +25,8 @@ struct PluginParams {
     mode: EnumParam<HostMode>,
     #[id = "gain"]
     gain: FloatParam,
+    #[id = "delay_samples"]
+    delay_samples: IntParam,
 }
 
 impl Default for PluginParams {
@@ -37,6 +41,15 @@ impl Default for PluginParams {
                     max: 16.0,
                 },
             ),
+            delay_samples: IntParam::new(
+                "Delay Time",
+                0,
+                IntRange::Linear {
+                    min: 0,
+                    max: MAX_DELAY_SAMPLES as i32,
+                },
+            )
+            .with_unit(" samples"),
         }
     }
 }
@@ -44,6 +57,7 @@ impl Default for PluginParams {
 enum ParameterEdit {
     Mode(HostMode),
     Gain(f32),
+    DelaySamples(i32),
 }
 
 pub struct SetParameterTask {
@@ -98,11 +112,12 @@ impl Plugin for AudioTestReference {
             return false;
         }
         context.set_latency_samples(0);
-        self.fault.store(false, Ordering::Relaxed);
+        self.reset();
         true
     }
 
     fn reset(&mut self) {
+        self.processor.reset();
         self.fault.store(false, Ordering::Relaxed);
     }
 
@@ -112,23 +127,32 @@ impl Plugin for AudioTestReference {
         _: &mut AuxiliaryBuffers,
         _: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
-        let mut fault = false;
-        let requested_mode = match self.params.mode.value() {
-            HostMode::Identity => Ok(domain::Mode::Identity),
-            HostMode::Gain => {
-                let gain = f64::from(self.params.gain.value());
-                domain::Gain::new(gain).map(|gain| domain::Mode::Gain { gain })
-            }
-        };
+        let n = self.params.delay_samples.value();
+        if (0..=MAX_DELAY_SAMPLES as i32).contains(&n) {
+            let n = n as usize;
+            let requested_mode = match self.params.mode.value() {
+                HostMode::Identity => Ok(domain::Mode::Identity),
+                HostMode::Gain => {
+                    let gain = f64::from(self.params.gain.value());
+                    domain::Gain::new(gain).map(|gain| domain::Mode::Gain { gain })
+                }
+                HostMode::Delay => Ok(domain::Mode::Delay { n }),
+            };
 
-        if let Ok(mode) = requested_mode {
-            self.processor.set_mode(mode);
+            if let Ok(mode) = requested_mode {
+                // Track length even when Delay is inactive.
+                if !matches!(mode, domain::Mode::Delay { .. }) {
+                    let _ = self.processor.set_delay_samples(n);
+                }
+                let _ = self.processor.set_mode(mode);
+            }
         }
 
         let [left, right] = buffer.as_slice() else {
             return ProcessStatus::Error("expect stereo buffer");
         };
 
+        let mut fault = false;
         for (l, r) in left.iter_mut().zip(right.iter_mut()) {
             let SampleResult { output, faulted } = self.processor.process_frame([*l, *r]);
             *l = output[0];
@@ -163,6 +187,14 @@ impl Plugin for AudioTestReference {
                     setter.begin_set_parameter(&params.gain);
                     setter.set_parameter(&params.gain, gain);
                     setter.end_set_parameter(&params.gain);
+                }
+                ParameterEdit::DelaySamples(n) => {
+                    if !(0..=MAX_DELAY_SAMPLES as i32).contains(&n) {
+                        return;
+                    }
+                    setter.begin_set_parameter(&params.delay_samples);
+                    setter.set_parameter(&params.delay_samples, n);
+                    setter.end_set_parameter(&params.delay_samples);
                 }
             }
         })
