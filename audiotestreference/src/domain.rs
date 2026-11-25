@@ -1,18 +1,21 @@
 //! Framework-independent stereo DSP and mode state.
 mod delay;
 mod gain;
+mod low_pass;
 
-use crate::domain::delay::Delay;
+use self::{delay::Delay, low_pass::LowPass};
 
 pub use self::{
     delay::MAX_DELAY_SAMPLES,
     gain::{gain, Gain},
+    low_pass::{low_pass_control, Coefficients, CUTOFF_RANGE, DEFAULT_CUTOFF, DEFAULT_Q, Q_RANGE},
 };
 
 #[derive(Debug, PartialEq)]
 pub enum ConfigError {
     InvalidGain,
     InvalidDelay,
+    InvalidCoefficient,
 }
 
 #[derive(Debug, PartialEq)]
@@ -20,6 +23,7 @@ pub enum Mode {
     Identity,
     Gain { gain: Gain },
     Delay { n: usize },
+    LowPass { cutoff: f64, q: f64 },
 }
 
 #[derive(Debug, PartialEq)]
@@ -32,6 +36,7 @@ pub struct SampleResult {
 pub struct Processor {
     mode: Mode,
     delay: Delay,
+    low_pass: LowPass,
 }
 
 impl Processor {
@@ -39,12 +44,17 @@ impl Processor {
         Self {
             mode: Mode::Identity,
             delay: Delay::new(0).expect("zero is a valid delay length"),
+            low_pass: LowPass::new(),
         }
     }
 
     pub fn set_mode(&mut self, mode: Mode) -> Result<(), ConfigError> {
-        if let Mode::Delay { n } = mode {
-            self.delay.change_delay(n)?;
+        match mode {
+            Mode::Delay { n } => self.delay.change_delay(n)?,
+            Mode::LowPass { cutoff, q } if self.mode != mode => {
+                self.low_pass.coefficients = Coefficients::from_cutoff_q(cutoff, q)?;
+            }
+            _ => {}
         }
         if std::mem::discriminant(&self.mode) != std::mem::discriminant(&mode) {
             self.reset();
@@ -63,6 +73,7 @@ impl Processor {
 
     pub fn reset(&mut self) {
         self.delay.reset();
+        self.low_pass.reset();
     }
 
     pub fn process_frame(&mut self, frame: [f32; 2]) -> SampleResult {
@@ -72,13 +83,22 @@ impl Processor {
             Mode::Identity => identity(frame64),
             Mode::Gain { gain: factor } => gain(frame64, factor),
             Mode::Delay { .. } => self.delay.process_frame(frame64),
+            Mode::LowPass { .. } => self.low_pass.process_frame(frame64),
         };
 
-        let (frame32, result_faulted) = convert_64_to_32(result);
+        let (frame32, [left_fault, right_fault]) = convert_64_to_32(result);
+        if matches!(self.mode, Mode::LowPass { .. }) {
+            if left_fault {
+                self.low_pass.reset_channel(0);
+            }
+            if right_fault {
+                self.low_pass.reset_channel(1);
+            }
+        }
 
         SampleResult {
             output: frame32,
-            faulted: input_faulted || result_faulted,
+            faulted: input_faulted || left_fault || right_fault,
         }
     }
 }
@@ -111,7 +131,7 @@ fn convert_32_to_64(frame: [f32; 2]) -> ([f64; 2], bool) {
     (frame64, input_faulted)
 }
 
-fn convert_64_to_32(frame: [f64; 2]) -> ([f32; 2], bool) {
+fn convert_64_to_32(frame: [f64; 2]) -> ([f32; 2], [bool; 2]) {
     let [(left, left_fault), (right, right_fault)] = frame.map(|sample| {
         if sample.is_finite() && sample.abs() <= f64::from(f32::MAX) {
             (sample as f32, false)
@@ -120,9 +140,7 @@ fn convert_64_to_32(frame: [f64; 2]) -> ([f32; 2], bool) {
         }
     });
 
-    let frame32 = [left, right];
-    let input_faulted = left_fault || right_fault;
-    (frame32, input_faulted)
+    ([left, right], [left_fault, right_fault])
 }
 
 #[cfg(test)]

@@ -15,7 +15,9 @@ use std::{
     time::Duration,
 };
 
-use crate::{AudioTestReference, HostMode, ParameterEdit, PluginParams, SetParameterTask};
+use crate::{
+    AudioTestReference, HostMode, LowPassReadback, ParameterEdit, PluginParams, SetParameterTask,
+};
 
 fn helper_path() -> Option<PathBuf> {
     // SAFETY: dladdr fills info on success; dli_fname is a NUL-terminated library path.
@@ -37,6 +39,7 @@ fn helper_path() -> Option<PathBuf> {
 pub struct EditorBridge {
     params: Arc<PluginParams>,
     fault: Arc<AtomicBool>,
+    low_pass: Arc<LowPassReadback>,
     scale: AtomicU32,
     executor: AsyncExecutor<AudioTestReference>,
 }
@@ -45,11 +48,13 @@ impl EditorBridge {
     pub fn new(
         params: Arc<PluginParams>,
         fault: Arc<AtomicBool>,
+        low_pass: Arc<LowPassReadback>,
         executor: AsyncExecutor<AudioTestReference>,
     ) -> Self {
         Self {
             params,
             fault,
+            low_pass,
             scale: AtomicU32::new(1.0f32.to_bits()),
             executor,
         }
@@ -90,6 +95,7 @@ impl Editor for EditorBridge {
         let writer_stop = stop.clone();
         let fault = Arc::clone(&self.fault);
         let params = Arc::clone(&self.params);
+        let low_pass = Arc::clone(&self.low_pass);
         let writer = thread::spawn(move || {
             while !writer_stop.load(Ordering::Relaxed) {
                 let fault_byte = if fault.load(Ordering::Relaxed) {
@@ -102,15 +108,24 @@ impl Editor for EditorBridge {
                     HostMode::Identity => b'I',
                     HostMode::Gain => b'G',
                     HostMode::Delay => b'D',
+                    HostMode::LowPass => b'L',
                 };
 
-                // Status frame: fault byte, mode byte, LE plain gain and delay samples.
-                let [a, b, c, d] = params.gain.unmodulated_plain_value().to_le_bytes();
-                let [e, f, g, h] = params.delay_samples.unmodulated_plain_value().to_le_bytes();
-                if to_helper
-                    .write_all(&[fault_byte, mode_byte, a, b, c, d, e, f, g, h])
-                    .is_err()
-                {
+                // Status frame: fault, mode, LE gain/delay, requested cutoff/Q,
+                // active rate, and the cutoff/Q pair last applied by DSP.
+                let mut message = [0u8; 30];
+                message[..2].copy_from_slice(&[fault_byte, mode_byte]);
+                message[2..6].copy_from_slice(&params.gain.unmodulated_plain_value().to_le_bytes());
+                message[6..10]
+                    .copy_from_slice(&params.delay_samples.unmodulated_plain_value().to_le_bytes());
+                message[10..14]
+                    .copy_from_slice(&params.cutoff.unmodulated_plain_value().to_le_bytes());
+                message[14..18].copy_from_slice(&params.q.unmodulated_plain_value().to_le_bytes());
+                let rate = low_pass.sample_rate.load(Ordering::Acquire);
+                let applied = low_pass.applied.load(Ordering::Relaxed);
+                message[18..22].copy_from_slice(&rate.to_le_bytes());
+                message[22..].copy_from_slice(&applied.to_le_bytes());
+                if to_helper.write_all(&message).is_err() {
                     break;
                 }
                 thread::sleep(Duration::from_millis(16));
@@ -129,8 +144,11 @@ impl Editor for EditorBridge {
                     b'I' => ParameterEdit::Mode(HostMode::Identity),
                     b'G' => ParameterEdit::Mode(HostMode::Gain),
                     b'D' => ParameterEdit::Mode(HostMode::Delay),
+                    b'L' => ParameterEdit::Mode(HostMode::LowPass),
                     b'V' => ParameterEdit::Gain(f32::from_le_bytes(payload)),
                     b'N' => ParameterEdit::DelaySamples(i32::from_le_bytes(payload)),
+                    b'U' => ParameterEdit::Cutoff(f32::from_le_bytes(payload)),
+                    b'Q' => ParameterEdit::Q(f32::from_le_bytes(payload)),
                     _ => {
                         eprintln!("AudioTestReference: unknown editor edit tag {tag}");
                         continue;

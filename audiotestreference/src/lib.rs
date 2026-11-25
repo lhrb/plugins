@@ -2,12 +2,18 @@ pub mod domain;
 mod editor;
 
 use nih_plug::prelude::*;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
+use std::{
+    ops::RangeInclusive,
+    sync::{
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        Arc,
+    },
 };
 
-use crate::domain::{Processor, SampleResult, MAX_DELAY_SAMPLES};
+use crate::domain::{
+    low_pass_control, ConfigError, Processor, SampleResult, CUTOFF_RANGE, DEFAULT_CUTOFF,
+    DEFAULT_Q, MAX_DELAY_SAMPLES, Q_RANGE,
+};
 
 #[derive(Enum, Clone, Copy, PartialEq, Eq)]
 enum HostMode {
@@ -17,6 +23,9 @@ enum HostMode {
     Gain,
     #[id = "delay"]
     Delay,
+    #[id = "low_pass"]
+    #[name = "Low-pass"]
+    LowPass,
 }
 
 #[derive(Params)]
@@ -27,6 +36,10 @@ struct PluginParams {
     gain: FloatParam,
     #[id = "delay_samples"]
     delay_samples: IntParam,
+    #[id = "cutoff_fraction"]
+    cutoff: FloatParam,
+    #[id = "low_pass_q"]
+    q: FloatParam,
 }
 
 impl Default for PluginParams {
@@ -50,14 +63,33 @@ impl Default for PluginParams {
                 },
             )
             .with_unit(" samples"),
+            cutoff: low_pass_param("Cutoff (fraction)", DEFAULT_CUTOFF, CUTOFF_RANGE),
+            q: low_pass_param("Q", DEFAULT_Q, Q_RANGE),
         }
     }
+}
+
+fn low_pass_param(name: &str, default: f64, range: RangeInclusive<f64>) -> FloatParam {
+    FloatParam::new(
+        name,
+        default as f32,
+        FloatRange::Linear {
+            min: *range.start() as f32,
+            max: *range.end() as f32,
+        },
+    )
+    .with_string_to_value(Arc::new(move |text| {
+        let value = text.parse::<f64>().ok()?;
+        range.contains(&value).then_some(value as f32)
+    }))
 }
 
 enum ParameterEdit {
     Mode(HostMode),
     Gain(f32),
     DelaySamples(i32),
+    Cutoff(f32),
+    Q(f32),
 }
 
 pub struct SetParameterTask {
@@ -66,9 +98,17 @@ pub struct SetParameterTask {
 }
 
 #[derive(Default)]
+struct LowPassReadback {
+    sample_rate: AtomicU32,
+    // Two plain f32 values packed together; zero means no applied Low-pass setting.
+    applied: AtomicU64,
+}
+
+#[derive(Default)]
 pub struct AudioTestReference {
     params: Arc<PluginParams>,
     fault: Arc<AtomicBool>,
+    low_pass_readback: Arc<LowPassReadback>,
     processor: Processor,
 }
 
@@ -95,6 +135,7 @@ impl Plugin for AudioTestReference {
         Some(Box::new(editor::EditorBridge::new(
             Arc::clone(&self.params),
             Arc::clone(&self.fault),
+            Arc::clone(&self.low_pass_readback),
             executor,
         )))
     }
@@ -113,7 +154,17 @@ impl Plugin for AudioTestReference {
         }
         context.set_latency_samples(0);
         self.reset();
+        self.low_pass_readback.applied.store(0, Ordering::Relaxed);
+        self.low_pass_readback
+            .sample_rate
+            .store(config.sample_rate.to_bits(), Ordering::Release);
         true
+    }
+
+    fn deactivate(&mut self) {
+        self.low_pass_readback
+            .sample_rate
+            .store(0, Ordering::Release);
     }
 
     fn reset(&mut self) {
@@ -130,6 +181,7 @@ impl Plugin for AudioTestReference {
         let n = self.params.delay_samples.value();
         if (0..=MAX_DELAY_SAMPLES as i32).contains(&n) {
             let n = n as usize;
+            let mut applied = 0;
             let requested_mode = match self.params.mode.value() {
                 HostMode::Identity => Ok(domain::Mode::Identity),
                 HostMode::Gain => {
@@ -137,14 +189,29 @@ impl Plugin for AudioTestReference {
                     domain::Gain::new(gain).map(|gain| domain::Mode::Gain { gain })
                 }
                 HostMode::Delay => Ok(domain::Mode::Delay { n }),
+                HostMode::LowPass => {
+                    let cutoff_plain = self.params.cutoff.value();
+                    let q_plain = self.params.q.value();
+                    applied =
+                        u64::from(cutoff_plain.to_bits()) | (u64::from(q_plain.to_bits()) << 32);
+                    low_pass_control(cutoff_plain, CUTOFF_RANGE)
+                        .zip(low_pass_control(q_plain, Q_RANGE))
+                        .map(|(cutoff, q)| domain::Mode::LowPass { cutoff, q })
+                        .ok_or(ConfigError::InvalidCoefficient)
+                }
             };
 
             if let Ok(mode) = requested_mode {
-                // Track length even when Delay is inactive.
-                if !matches!(mode, domain::Mode::Delay { .. }) {
-                    let _ = self.processor.set_delay_samples(n);
+                let delay_selected = matches!(mode, domain::Mode::Delay { .. });
+                if self.processor.set_mode(mode).is_ok() {
+                    // Track length even when Delay is inactive.
+                    if !delay_selected {
+                        let _ = self.processor.set_delay_samples(n);
+                    }
+                    self.low_pass_readback
+                        .applied
+                        .store(applied, Ordering::Relaxed);
                 }
-                let _ = self.processor.set_mode(mode);
             }
         }
 
@@ -195,6 +262,22 @@ impl Plugin for AudioTestReference {
                     setter.begin_set_parameter(&params.delay_samples);
                     setter.set_parameter(&params.delay_samples, n);
                     setter.end_set_parameter(&params.delay_samples);
+                }
+                ParameterEdit::Cutoff(value) => {
+                    if low_pass_control(value, CUTOFF_RANGE).is_none() {
+                        return;
+                    }
+                    setter.begin_set_parameter(&params.cutoff);
+                    setter.set_parameter(&params.cutoff, value);
+                    setter.end_set_parameter(&params.cutoff);
+                }
+                ParameterEdit::Q(value) => {
+                    if low_pass_control(value, Q_RANGE).is_none() {
+                        return;
+                    }
+                    setter.begin_set_parameter(&params.q);
+                    setter.set_parameter(&params.q, value);
+                    setter.end_set_parameter(&params.q);
                 }
             }
         })

@@ -1,15 +1,19 @@
 //! The helper alone owns GPUI and its event loop. No device or DSP lives here.
 #[path = "../embedding.rs"]
 mod embedding;
-use audio_test_reference::domain::MAX_DELAY_SAMPLES;
+use audio_test_reference::domain::{
+    low_pass_control, Coefficients, CUTOFF_RANGE, DEFAULT_CUTOFF, DEFAULT_Q, MAX_DELAY_SAMPLES,
+    Q_RANGE,
+};
 use gpui::{prelude::*, *};
 use std::{
     cell::Cell,
     io::{self, Read, Write},
+    ops::RangeInclusive,
     rc::Rc,
     sync::{
         atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU8, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -21,6 +25,51 @@ struct Status {
     mode: AtomicU8,
     gain: AtomicU32,
     delay_samples: AtomicI32,
+    filter: Mutex<FilterStatus>,
+}
+
+#[derive(Clone, Copy)]
+struct FilterStatus {
+    cutoff: f32,
+    q: f32,
+    rate: f32,
+    applied_cutoff: f32,
+    applied_q: f32,
+}
+
+impl Default for FilterStatus {
+    fn default() -> Self {
+        Self {
+            cutoff: DEFAULT_CUTOFF as f32,
+            q: DEFAULT_Q as f32,
+            rate: 0.0,
+            applied_cutoff: 0.0,
+            applied_q: 0.0,
+        }
+    }
+}
+
+impl FilterStatus {
+    fn readback(self) -> impl IntoElement {
+        let cutoff = low_pass_control(self.applied_cutoff, CUTOFF_RANGE);
+        let q = low_pass_control(self.applied_q, Q_RANGE);
+        let status = div().text_sm();
+        if self.rate == 0.0 {
+            return status
+                .child("No active sample rate. Effective values appear during processing.");
+        }
+        if let Some((cutoff, q)) = cutoff.zip(q) {
+            if let Ok(Coefficients { b0, b1, b2, a1, a2 }) = Coefficients::from_cutoff_q(cutoff, q)
+            {
+                let hz = cutoff * f64::from(self.rate);
+                return status
+                    .child(div().child(format!("Effective: {cutoff:?} · {hz:?} Hz · Q {q:?}")))
+                    .child(div().child(format!("b0={b0:?} · b1={b1:?} · b2={b2:?}")))
+                    .child(div().child(format!("a1={a1:?} · a2={a2:?} · a0=1")));
+            }
+        }
+        status.child("Effective values appear after Low-pass is applied by the audio engine.")
+    }
 }
 
 impl Status {
@@ -28,6 +77,7 @@ impl Status {
         match self.mode.load(Ordering::Relaxed) {
             b'G' => EditorMode::Gain,
             b'D' => EditorMode::Delay,
+            b'L' => EditorMode::LowPass,
             _ => EditorMode::Identity,
         }
     }
@@ -43,12 +93,23 @@ enum EditorMode {
     Identity = b'I',
     Gain = b'G',
     Delay = b'D',
+    LowPass = b'L',
 }
 
 enum EditorEdit {
     Mode(EditorMode),
     Gain(f32),
     DelaySamples(i32),
+    Cutoff(f32),
+    Q(f32),
+}
+
+#[derive(Clone, Copy)]
+enum Slider {
+    Gain,
+    Delay,
+    Cutoff,
+    Q,
 }
 
 const MIN_GAIN: f32 = -16.0;
@@ -59,7 +120,8 @@ struct EditorView {
     mode: EditorMode,
     gain: f32,
     delay_samples: i32,
-    slider_drag: Option<Bounds<Pixels>>,
+    filter: FilterStatus,
+    slider_drag: Option<(Slider, Bounds<Pixels>)>,
     // Retain the X11 client while the child window is embedded.
     _embedding: x11rb::rust_connection::RustConnection,
     edit_tx: std::sync::mpsc::Sender<EditorEdit>,
@@ -71,16 +133,27 @@ impl EditorView {
         self.slider_drag = None;
     }
 
-    fn edit_slider(&mut self, x: Pixels, bounds: Bounds<Pixels>) {
-        match self.mode {
-            EditorMode::Identity => {}
-            EditorMode::Gain => {
+    fn edit_slider(&mut self, slider: Slider, x: Pixels, bounds: Bounds<Pixels>) {
+        match slider {
+            Slider::Gain => {
                 self.gain = gain_at(x, bounds);
                 self.send_edit(EditorEdit::Gain(self.gain));
             }
-            EditorMode::Delay => {
+            Slider::Delay => {
                 self.delay_samples = delay_samples_at(x, bounds);
                 self.send_edit(EditorEdit::DelaySamples(self.delay_samples));
+            }
+            Slider::Cutoff => {
+                if let Some(value) = low_pass_at(x, bounds, CUTOFF_RANGE) {
+                    self.filter.cutoff = value;
+                    self.send_edit(EditorEdit::Cutoff(value));
+                }
+            }
+            Slider::Q => {
+                if let Some(value) = low_pass_at(x, bounds, Q_RANGE) {
+                    self.filter.q = value;
+                    self.send_edit(EditorEdit::Q(value));
+                }
             }
         }
     }
@@ -115,6 +188,7 @@ impl EditorView {
 
     fn slider(
         &self,
+        slider: Slider,
         label: String,
         fraction: f32,
         [min, midpoint, max]: [&'static str; 3],
@@ -142,8 +216,8 @@ impl EditorView {
                                 MouseButton::Left,
                                 cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                                     if let Some(bounds) = bounds.get() {
-                                        this.slider_drag = Some(bounds);
-                                        this.edit_slider(event.position.x, bounds);
+                                        this.slider_drag = Some((slider, bounds));
+                                        this.edit_slider(slider, event.position.x, bounds);
                                         cx.notify();
                                     }
                                 }),
@@ -205,6 +279,17 @@ fn delay_samples_at(x: Pixels, bounds: Bounds<Pixels>) -> i32 {
     (slider_fraction(x, bounds) * MAX_DELAY_SAMPLES as f32).round() as i32
 }
 
+fn low_pass_at(x: Pixels, bounds: Bounds<Pixels>, range: RangeInclusive<f64>) -> Option<f32> {
+    let fraction = f64::from(slider_fraction(x, bounds));
+    let value = *range.start() + fraction * (*range.end() - *range.start());
+    range.contains(&value).then_some(value as f32)
+}
+
+fn low_pass_position(value: f32, range: RangeInclusive<f64>) -> f32 {
+    let value = low_pass_control(value, range.clone()).unwrap_or(*range.start());
+    ((value - *range.start()) / (*range.end() - *range.start())) as f32
+}
+
 fn gain_label(gain: f32) -> String {
     if gain == 0.0 {
         return "0× · mute (−∞ dB)".to_owned();
@@ -223,11 +308,12 @@ impl Render for EditorView {
             .flex()
             .flex_col()
             .gap_4()
+            .when(self.mode == EditorMode::LowPass, |view| view.gap_3())
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                 if !event.dragging() {
                     this.slider_drag = None;
-                } else if let Some(bounds) = this.slider_drag {
-                    this.edit_slider(event.position.x, bounds);
+                } else if let Some((slider, bounds)) = this.slider_drag {
+                    this.edit_slider(slider, event.position.x, bounds);
                     cx.notify();
                 }
             }))
@@ -246,10 +332,12 @@ impl Render for EditorView {
                     .gap_2()
                     .child(self.mode_button("Identity", EditorMode::Identity, cx))
                     .child(self.mode_button("Gain", EditorMode::Gain, cx))
-                    .child(self.mode_button("Delay", EditorMode::Delay, cx)),
+                    .child(self.mode_button("Delay", EditorMode::Delay, cx))
+                    .child(self.mode_button("Low-pass", EditorMode::LowPass, cx)),
             )
             .when(self.mode == EditorMode::Gain, |view| {
                 view.child(self.slider(
+                    Slider::Gain,
                     format!("Gain: {}", gain_label(self.gain)),
                     (self.gain - MIN_GAIN) / (MAX_GAIN - MIN_GAIN),
                     ["−16×", "0×", "+16×"],
@@ -258,16 +346,40 @@ impl Render for EditorView {
             })
             .when(self.mode == EditorMode::Delay, |view| {
                 view.child(self.slider(
+                    Slider::Delay,
                     format!("Delay Time: {} samples", self.delay_samples),
                     self.delay_samples as f32 / MAX_DELAY_SAMPLES as f32,
                     ["0", "96,000", "192,000"],
                     cx,
                 ))
             })
+            .when(self.mode == EditorMode::LowPass, |view| {
+                view.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(self.slider(
+                            Slider::Cutoff,
+                            format!("Cutoff (fraction): {}", self.filter.cutoff),
+                            low_pass_position(self.filter.cutoff, CUTOFF_RANGE),
+                            ["0.0001", "", "0.49"],
+                            cx,
+                        ))
+                        .child(self.slider(
+                            Slider::Q,
+                            format!("Q: {}", self.filter.q),
+                            low_pass_position(self.filter.q, Q_RANGE),
+                            ["0.1", "", "20"],
+                            cx,
+                        ))
+                        .child(self.filter.readback()),
+                )
+            })
             .child(if self.status.fault.load(Ordering::Relaxed) {
-                "Fault: nonfinite input replaced with zero (latched until reset/activation)."
+                "Audio fault: nonfinite input or invalid output (latched until reset/activation)."
             } else {
-                "Input safety: no nonfinite input observed since reset/activation."
+                "Audio safety: no faults observed since reset/activation."
             })
     }
 }
@@ -284,9 +396,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let reader_status = status.clone();
     std::thread::spawn(move || {
         let mut stdin = io::stdin().lock();
-        let mut message = [0u8; 10];
+        let mut message = [0u8; 30];
         while stdin.read_exact(&mut message).is_ok() {
-            let [fault, mode, a, b, c, d, e, f, g, h] = message;
+            let [fault, mode, a, b, c, d, e, f, g, h, ..] = message;
             let gain = f32::from_le_bytes([a, b, c, d]);
             if (MIN_GAIN..=MAX_GAIN).contains(&gain) {
                 reader_status.gain.store(gain.to_bits(), Ordering::Relaxed);
@@ -297,6 +409,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .delay_samples
                     .store(delay_samples, Ordering::Relaxed);
             }
+            let float_at =
+                |offset| f32::from_le_bytes(message[offset..offset + 4].try_into().unwrap());
+            let mut filter = reader_status.filter.lock().unwrap();
+            let cutoff = float_at(10);
+            let q = float_at(14);
+            if low_pass_control(cutoff, CUTOFF_RANGE).is_some() {
+                filter.cutoff = cutoff;
+            }
+            if low_pass_control(q, Q_RANGE).is_some() {
+                filter.q = q;
+            }
+            filter.rate = float_at(18);
+            filter.applied_cutoff = float_at(22);
+            filter.applied_q = float_at(26);
             reader_status.fault.store(fault == b'1', Ordering::Relaxed);
             reader_status.mode.store(mode, Ordering::Relaxed);
         }
@@ -312,6 +438,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 EditorEdit::Mode(mode) => (mode as u8, [0; 4]),
                 EditorEdit::Gain(gain) => (b'V', gain.to_le_bytes()),
                 EditorEdit::DelaySamples(n) => (b'N', n.to_le_bytes()),
+                EditorEdit::Cutoff(value) => (b'U', value.to_le_bytes()),
+                EditorEdit::Q(value) => (b'Q', value.to_le_bytes()),
             };
 
             if stdout.write_all(&[tag, a, b, c, d]).is_err() || stdout.flush().is_err() {
@@ -356,6 +484,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         let mode = polled_status.mode();
                         let gain = polled_status.gain();
                         let delay_samples = polled_status.delay_samples.load(Ordering::Relaxed);
+                        let mut filter = *polled_status.filter.lock().unwrap();
 
                         if view
                             .update(cx, |this, cx| {
@@ -368,6 +497,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 if this.slider_drag.is_none() || mode != EditorMode::Delay {
                                     this.delay_samples = delay_samples;
                                 }
+                                match this.slider_drag {
+                                    Some((Slider::Cutoff, _)) => filter.cutoff = this.filter.cutoff,
+                                    Some((Slider::Q, _)) => filter.q = this.filter.q,
+                                    _ => {}
+                                }
+                                this.filter = filter;
                                 cx.notify();
                             })
                             .is_err()
@@ -380,6 +515,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         mode: status.mode(),
                         gain: status.gain(),
                         delay_samples: status.delay_samples.load(Ordering::Relaxed),
+                        filter: FilterStatus::default(),
                         status,
                         slider_drag: None,
                         _embedding: connection,
